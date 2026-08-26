@@ -576,4 +576,7 @@ def api_admin(action):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 8420)), debug=False)
+    # Loopback unless HOST says otherwise, so the local app stays off the network
+    # by default. sandbox.py opts in to 0.0.0.0 for testing from a phone.
+    app.run(host=os.environ.get("HOST") or "127.0.0.1",
+            port=int(os.environ.get("PORT", 8420)), debug=False)

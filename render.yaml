@@ -6,15 +6,15 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 60
     envVars:
+      # Postgres lives at Neon, not Render. Render's free databases expire 30
+      # days after creation and are then deleted with all their data, which for
+      # a tool meant to keep lunch history is a countdown, not a free tier.
+      # Neon's free tier has no expiry. Paste its connection string here in the
+      # Render dashboard -- store.py already handles the URL and Neon's
+      # idle auto-suspend (pool_pre_ping).
       - key: DATABASE_URL
-        fromDatabase:
-          name: lunch-db
-          property: connectionString
+        sync: false              # set this yourself in the dashboard
       - key: SECRET_KEY
         generateValue: true      # Render invents one; keeps sessions signed
       - key: ADMIN_PASSWORD
         sync: false              # set this yourself in the dashboard
-
-databases:
-  - name: lunch-db
-    plan: free

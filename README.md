@@ -4,11 +4,32 @@ Group lunch ordering and settling-up. Coworkers add their own orders from a shar
 
 Hawaii food tax and whole-dollar rounding are built in, so change is always bills.
 
-## Two ways to run it
+## Three ways to run it
 
 **Locally** — double-click `Lunch.bat`, which serves on `127.0.0.1:8420` and stores days as JSON files in `data/`. No internet, nothing shared.
 
+**Sandbox** — double-click `Sandbox.bat` to try things out. Serves on port **8421** and writes to `sandbox.db`, so it cannot touch your real orders in `data/` — setting `DATABASE_URL` sends every read and write to SQLite instead, so those files are never opened at all. It seeds a few fake orders and prints an address your phone can reach:
+
+```
+  This PC     http://127.0.0.1:8421
+  Your phone  http://192.168.1.42:8421      <- same wifi
+  Admin       http://127.0.0.1:8421/admin   password: test
+```
+
+Delete `sandbox.db` to wipe it and start over.
+
+> Windows will ask to allow Python through the firewall the first time — say yes to **Private networks**, or the phone address won't answer. If the prompt gets dismissed, in an **admin** PowerShell:
+>
+> ```powershell
+> New-NetFirewallRule -DisplayName "Lunch sandbox" -Direction Inbound `
+>   -Protocol TCP -LocalPort 8421 -Profile Private -Action Allow
+> ```
+
 **Hosted** — see [Deploying](#deploying) below. Same app, with a database so several people can order at once.
+
+### Why the sandbox uses a different port
+
+Windows lets two processes bind the same port without either one erroring, and which of them answers a given request is undefined. If the sandbox shared 8420 with the real app, a sandbox request could be served by the real app and write to real orders. So the sandbox stays on 8421 **and** refuses to start if anything is already answering there.
 
 ## Who sees what
 
@@ -22,13 +43,22 @@ Hawaii food tax and whole-dollar rounding are built in, so change is always bill
 
 ## Deploying
 
-Push to GitHub, then on [render.com](https://render.com): **New → Blueprint**, point it at the repo. `render.yaml` creates the web service and a free Postgres database.
+### 1 · A database that doesn't expire
 
-Set one environment variable in the Render dashboard:
+Sign up at [neon.tech](https://neon.tech), create a project, and copy the connection string (`postgresql://...?sslmode=require`). Free, permanent, 0.5 GB — this app writes about 2 KB a day.
 
+> **Why not Render's free Postgres?** It expires 30 days after creation, then gets deleted along with all its data after a 14-day grace period, and free instances have no backups. For something meant to keep lunch history that's a countdown, not a free tier. Neon's free tier has no expiry clock. Nothing in the code changes either way — `store.py` normalises the URL and already sets `pool_pre_ping`, which is what Neon's idle auto-suspend needs.
+
+### 2 · The web service
+
+Push to GitHub, then on [render.com](https://render.com): **New → Blueprint**, point it at the repo. `render.yaml` creates the web service.
+
+Set two environment variables in the Render dashboard:
+
+- **`DATABASE_URL`** — the Neon connection string from step 1.
 - **`ADMIN_PASSWORD`** — your organiser password. **If you don't set it, admin access stays locked** (the app generates an unknowable one rather than falling back to something guessable, since this repo is public).
 
-`SECRET_KEY` and `DATABASE_URL` are filled in automatically.
+`SECRET_KEY` is generated automatically.
 
 The service is named `wasalunch`, so you get **`https://wasalunch.onrender.com`** free. Rename it in `render.yaml` to change that.
 
@@ -151,8 +181,13 @@ Everything saves the instant you change it. There's no save button and nothing t
 
 ## Under the hood
 
-- `server.py` — local web server + JSON API (Python standard library only)
-- `lunchcore.py` — all the money math and file handling
-- `web/` — the page itself
+- `app.py` — the Flask app: pages, JSON API, and the admin password check
+- `lunchcore.py` — all the money math
+- `store.py` — storage. `DATABASE_URL` unset → JSON files; set → Postgres/SQLite. Mutations are one locked read-modify-write, so two people ordering in the same second can't overwrite each other
+- `templates/`, `static/` — the pages themselves
+- `sandbox.py` — the throwaway-database launcher
+- `import_days.py` — one-shot migration of `data/` into a database
 
-All arithmetic happens in Python, never in the browser. `lunch_calculator.py` is the older desktop-window version, kept as a fallback; it reads the same data files and can be deleted once you're happy with this one.
+All arithmetic happens in Python, never in the browser.
+
+**Superseded, kept for now:** `server.py` (the earlier standard-library server), `web/` (its pages), and `lunch_calculator.py` (the original desktop window). All three still work against `data/`, and several test suites still drive them, which is why they haven't been removed yet.

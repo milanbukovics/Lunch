@@ -1,8 +1,11 @@
 # Real orders — coworkers' names and what they ate. Never publish this.
 data/
 
-# Local databases
+# Local databases. The -wal/-shm suffixes are SQLite's write-ahead log
+# sidecars; *.db does not match them, so they need naming explicitly.
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
