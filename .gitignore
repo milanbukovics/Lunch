@@ -1,0 +1,16 @@
+# Real orders — coworkers' names and what they ate. Never publish this.
+data/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+.env
+*.env
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/

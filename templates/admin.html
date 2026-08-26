@@ -1,0 +1,125 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunch Calculator</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Lunch</div>
+
+  <div class="dayNav">
+    <button id="prevDay" class="icon" title="Previous day">&#9664;</button>
+    <button id="pickDay" class="dayBtn"><span id="dayLabel">â€”</span></button>
+    <button id="nextDay" class="icon" title="Next day">&#9654;</button>
+    <button id="todayBtn" class="ghost">Today</button>
+  </div>
+
+  <label class="placeWrap">
+    <span>Place</span>
+    <input id="place" placeholder="where are we ordering from?" autocomplete="off">
+  </label>
+
+  <button id="lockBtn" class="ghost" title="Stop people adding orders">Close orders</button>
+  <a class="ghost linkGhost" href="/history">History</a>
+  <form method="post" action="/logout" class="quit"><button class="ghost" type="submit">Log out</button></form>
+</header>
+
+<nav class="steps" id="steps">
+  <button class="step active" data-step="orders"><b>1</b> Take orders</button>
+  <button class="step" data-step="call"><b>2</b> Call it in</button>
+  <button class="step" data-step="prices"><b>3</b> Receipt prices<i id="priceBadge"></i></button>
+  <button class="step" data-step="change"><b>4</b> Hand out change<i id="changeBadge"></i></button>
+</nav>
+
+<main>
+
+  <!-- 1 ---------------------------------------------------------------- -->
+  <section class="panel" data-panel="orders">
+    <form id="orderForm" class="entry" autocomplete="off">
+      <label class="f grow">
+        <span>Name</span>
+        <input id="fName" required>
+      </label>
+      <label class="f grow">
+        <span>Item</span>
+        <input id="fItem" list="menuList" required>
+        <datalist id="menuList"></datalist>
+      </label>
+      <label class="f">
+        <span>Gave me</span>
+        <div class="money"><i>$</i><input id="fPaid" inputmode="decimal" placeholder="optional"></div>
+      </label>
+      <div class="f">
+        <span>How</span>
+        <div class="toggle" id="fMethod">
+          <button class="tog on cash" type="button" data-m="cash">Cash</button>
+          <button class="tog" type="button" data-m="venmo">Venmo</button>
+        </div>
+      </div>
+      <button class="primary" type="submit">Add</button>
+    </form>
+    <p class="hint" id="orderHint">Prices come later from the receipt â€” just take the order and the cash.</p>
+
+    <div id="tally" class="tally"></div>
+    <div id="peopleList" class="list"></div>
+  </section>
+
+  <!-- 2 ---------------------------------------------------------------- -->
+  <section class="panel hidden" data-panel="call">
+    <div class="callHead">
+      <h2 id="callTitle">â€”</h2>
+      <button id="copyBtn" class="primary">Copy</button>
+    </div>
+    <ol id="callList" class="callList"></ol>
+    <div id="callTotals" class="callTotals"></div>
+  </section>
+
+  <!-- 3 ---------------------------------------------------------------- -->
+  <section class="panel hidden" data-panel="prices">
+    <p class="hint">Type each price <b>once</b> â€” everyone who ordered it updates automatically.</p>
+    <div id="priceRows" class="list"></div>
+
+    <div class="receiptCheck">
+      <div class="f">
+        <span>You paid with</span>
+        <div class="toggle" id="payMethod">
+          <button class="tog on cash" type="button" data-m="cash">Cash</button>
+          <button class="tog" type="button" data-m="card">Card</button>
+        </div>
+      </div>
+      <label class="f">
+        <span id="receiptLabel">Receipt total</span>
+        <div class="money"><i>$</i><input id="receiptTotal" inputmode="decimal" placeholder="what it came to"></div>
+      </label>
+      <label class="f" id="handedField">
+        <span>Cash you handed over</span>
+        <div class="money"><i>$</i><input id="cashHanded" inputmode="decimal" placeholder="bills you gave"></div>
+      </label>
+      <div id="receiptVerdict" class="verdict"></div>
+    </div>
+  </section>
+
+  <!-- 4 ---------------------------------------------------------------- -->
+  <section class="panel hidden" data-panel="change">
+    <div id="changeList" class="list"></div>
+  </section>
+
+</main>
+
+<footer class="cashbar">
+  <div class="cashline" id="cashLine">â€”</div>
+  <div class="verdictBig" id="cashRow"></div>
+  <div class="cashline hidden" id="venmoRow"></div>
+  <div class="cashline" id="netRow"></div>
+</footer>
+
+<div id="calendar" class="calendar hidden"></div>
+<div id="toast" class="toast"></div>
+
+<script src="{{ url_for('static', filename='admin.js') }}"></script>
+</body>
+</html>

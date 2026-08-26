@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunch history</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Lunch</div>
+  <div class="pubWhen"><span>History &amp; totals</span></div>
+  <a class="ghost linkGhost quit" href="/admin">← back to today</a>
+</header>
+
+<main>
+  <section class="panel">
+    <h3 class="groupHead">Every day</h3>
+    <div class="tableWrap"><table id="daysTable" class="hTable"></table></div>
+  </section>
+
+  <section class="panel" style="margin-top:16px">
+    <h3 class="groupHead">Spend per person</h3>
+    <div class="tableWrap"><table id="peopleTable" class="hTable"></table></div>
+  </section>
+
+  <section class="panel" style="margin-top:16px">
+    <h3 class="groupHead">Spend per place</h3>
+    <div class="tableWrap"><table id="placesTable" class="hTable"></table></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function table(node, headers, rows) {
+  node.replaceChildren();
+  const head = node.createTHead().insertRow();
+  for (const h of headers) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    head.append(th);
+  }
+  const body = node.createTBody();
+  if (!rows.length) {
+    const cell = body.insertRow().insertCell();
+    cell.colSpan = headers.length;
+    cell.className = "empty";
+    cell.textContent = "Nothing recorded yet.";
+    return;
+  }
+  for (const row of rows) {
+    const tr = body.insertRow();
+    row.forEach((value, i) => {
+      const cell = tr.insertCell();
+      cell.textContent = value;
+      if (i) cell.className = "num";
+    });
+  }
+}
+
+fetch("/api/history").then((r) => r.json()).then((data) => {
+  table($("daysTable"), ["Date", "Place", "People", "Items", "Bill", "Surplus"],
+        data.days.map((d) => [d.date, d.place || "—", d.people,
+                              "$" + d.items, "$" + d.bill, "$" + d.surplus]));
+  table($("peopleTable"), ["Person", "Total ordered"],
+        data.people.map((p) => [p.name, "$" + p.total]));
+  table($("placesTable"), ["Place", "Total ordered"],
+        data.places.map((p) => [p.place, "$" + p.total]));
+});
+</script>
+</body>
+</html>

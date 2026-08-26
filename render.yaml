@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: wasalunch          # -> https://wasalunch.onrender.com
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 60
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lunch-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true      # Render invents one; keeps sessions signed
+      - key: ADMIN_PASSWORD
+        sync: false              # set this yourself in the dashboard
+
+databases:
+  - name: lunch-db
+    plan: free

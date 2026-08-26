@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunch order</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="publicPage">
+
+<header class="topbar">
+  <div class="brand">Lunch</div>
+  <div class="pubWhen"><span id="pubPlace">—</span><span id="pubDate"></span></div>
+  <span id="lockPill" class="lockPill hidden">Orders closed</span>
+</header>
+
+<nav class="steps" id="pubTabs">
+  <button class="step active" data-tab="mine">Add my order</button>
+  <button class="step" data-tab="all">What everyone's getting <i id="allCount"></i></button>
+</nav>
+
+<main class="pubMain">
+
+  <section class="panel" data-tab="mine">
+    <form id="orderForm" autocomplete="off">
+      <div class="f">
+        <span>Your name</span>
+        <input id="pName" required placeholder="first name is fine">
+      </div>
+      <div class="f">
+        <span>What do you want?</span>
+        <input id="pItem" list="menuList" required placeholder="start typing…">
+        <datalist id="menuList"></datalist>
+      </div>
+      <div class="f">
+        <span>Paying with</span>
+        <div class="toggle" id="pMethod">
+          <button class="tog on cash" type="button" data-m="cash">Cash</button>
+          <button class="tog" type="button" data-m="venmo">Venmo</button>
+        </div>
+      </div>
+      <div class="f hidden" id="venmoField">
+        <span>Your Venmo username</span>
+        <input id="pVenmo" placeholder="@your-handle">
+        <p class="hint">Nothing to pay now — you'll get a request once the receipt is in.</p>
+      </div>
+      <button class="primary wide" type="submit">Add my order</button>
+    </form>
+
+    <div id="mine" class="list"></div>
+    <p class="hint" id="closedNote"></p>
+  </section>
+
+  <section class="panel hidden" data-tab="all">
+    <div id="everyone" class="list"></div>
+    <p class="hint">Just so you can see what people are getting.</p>
+  </section>
+
+</main>
+
+<div id="toast" class="toast"></div>
+<script src="{{ url_for('static', filename='order.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organiser login</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="loginPage">
+<main class="loginBox">
+  <h1>Organiser</h1>
+  <p class="hint">Only whoever is picking up lunch needs this.</p>
+  <form method="post">
+    <div class="f">
+      <span>Password</span>
+      <input type="password" name="password" autofocus required>
+    </div>
+    {% if error %}<p class="loginErr">{{ error }}</p>{% endif %}
+    <button class="primary wide" type="submit">Log in</button>
+  </form>
+  <p class="hint"><a href="/">← back to ordering</a></p>
+</main>
+</body>
+</html>
