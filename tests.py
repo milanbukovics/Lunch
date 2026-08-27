@@ -324,15 +324,30 @@ def test_web(srv, D):
     rows = {r["date"]: r.get("organiser") for r in json.loads(raw)["days"]}
     check("history records who ran the day", rows.get(D) == "Milan", str(rows))
 
-    section("THE ORDERING BOX HAS NO MENU")
+    section("THE ORDERING FORM READS PLAINLY")
     _, html = srv.get("/")
     check("no <datalist>", "<datalist" not in html)
     check("no list= on the item box",
           not re.search(r'id="pItem"[^>]*list=', html))
-    check("tells people they can type anything", "no set menu" in html)
+    check("asks the friendly question",
+          "What would you like to have for lunch today?" in html)
+    check("the blunt version is gone", "What do you want?" not in html)
+    check("the 'no set menu' line is gone", "no set menu" not in html)
     check("brand appears once, not twice",
           len(re.findall(r">Lunch<", html)) == 1,
           f"{len(re.findall(r'>Lunch<', html))} occurrences")
+
+    section("THE VENMO NOTE NAMES THE ORGANISER")
+    _, js = srv.get("/static/order.js")
+    check("says a returning payer can leave it blank",
+          "you can leave this blank" in js)
+    check("names who will request the money",
+          "${who} will request the amount" in js)
+    check("falls back when nobody is recorded yet",
+          '"the organiser"' in js and "you'll get a request" in js)
+    # The organiser types this name at login; it renders for every coworker.
+    check("note is built from textContent, never innerHTML",
+          "innerHTML" not in js)
 
     section("CLOSING ORDERS")
     code, state = srv.post("/api/lock", op=admin, date=D, locked=True)

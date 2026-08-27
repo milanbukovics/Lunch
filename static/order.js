@@ -89,6 +89,17 @@ function render() {
   $("pubOrganiser").textContent = who ? `${who} is picking up` : "";
   $("pubOrganiser").classList.toggle("hidden", !who);
 
+  // Named so people know who will be asking them for money. Built from el(),
+  // which sets textContent -- the organiser types this name at login and it
+  // renders on a page every coworker loads, so it must never become markup.
+  $("venmoNote").replaceChildren(
+    el("span", null, `If you've paid ${who || "the organiser"} on Venmo before, `
+                     + "you can leave this blank."),
+    el("br"),
+    el("span", null, who
+      ? `Nothing to pay now — ${who} will request the amount once the receipt is in.`
+      : "Nothing to pay now — you'll get a request once the receipt is in."));
+
   $("lockPill").classList.toggle("hidden", !state.locked);
   $("orderForm").classList.toggle("hidden", state.locked);
   $("closedNote").textContent = !state.locked ? ""

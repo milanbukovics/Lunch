@@ -32,9 +32,8 @@
         <input id="pName" required placeholder="first name is fine">
       </div>
       <div class="f">
-        <span>What do you want?</span>
+        <span>What would you like to have for lunch today?</span>
         <input id="pItem" required placeholder="anything you like">
-        <p class="hint">Type whatever you want — there's no set menu here.</p>
       </div>
       <div class="f">
         <span>Paying with</span>
@@ -46,8 +45,7 @@
       <div class="f hidden" id="venmoField">
         <span>Your Venmo username</span>
         <input id="pVenmo" placeholder="@your-handle">
-        <p class="hint">Nothing to pay now — you'll get a request once the receipt is in.
-          <br>Typed once and remembered — you won't need to enter it again.</p>
+        <p class="hint" id="venmoNote"></p>
       </div>
       <button class="primary wide" type="submit">Add my order</button>
     </form>
