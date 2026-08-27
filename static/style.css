@@ -345,6 +345,18 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .lockPill { margin-left: auto; background: rgba(255,255,255,.22);
             padding: 5px 13px; border-radius: 20px; font-size: 13px; font-weight: 650; }
 
+/* Whoever is picking up needs a way into the admin side without being told to
+   type /admin. Understated on purpose -- coworkers should ignore it, and it
+   gives nothing away: the page behind it asks for the password.
+   margin-left:auto on both means the pill wins the gap when it is showing. */
+.organiserLink {
+  margin-left: auto; color: #fff; text-decoration: none;
+  background: rgba(255,255,255,.15); border-radius: 9px;
+  padding: 7px 13px; font-size: 13px; font-weight: 600; opacity: .85;
+  transition: background .15s, opacity .15s;
+}
+.organiserLink:hover { background: rgba(255,255,255,.3); opacity: 1; }
+
 .pubMain { max-width: 620px; margin: 0 auto; padding: 22px 20px 60px; }
 .pubMain .f { margin-bottom: 15px; }
 .publicPage .panel { padding: 24px; }
