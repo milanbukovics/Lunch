@@ -125,6 +125,7 @@ function render() {
   const count = state.orders.reduce((n, o) => n + o.items.length, 0);
   $("allCount").textContent = count ? String(count) : "";
 
+  renderMenu();
   renderMine();
   renderEveryone();
 }
@@ -174,6 +175,149 @@ function renderEveryone() {
   box.replaceChildren(...(rows.length
     ? rows
     : [el("div", "empty", "Nobody has ordered yet — be first.")]));
+}
+
+// --- the menu -------------------------------------------------------------
+
+function renderMenu() {
+  const files = state.menu || [];
+  $("menuBox").classList.toggle("hidden", !files.length);
+  if (!files.length) return;
+
+  $("menuStrip").replaceChildren(...files.map((file) => {
+    if (file.kind === "pdf") {
+      // Handed to the phone's own PDF viewer, where zoom and paging already
+      // work properly -- far better than anything reimplemented here.
+      const link = el("a", "menuPdf", file.filename);
+      link.href = `/menu/${file.id}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      return link;
+    }
+    const thumb = el("button", "menuThumb");
+    thumb.type = "button";
+    const img = el("img");
+    img.src = `/menu/${file.id}`;
+    img.alt = file.filename;
+    img.loading = "lazy";
+    thumb.append(img);
+    thumb.onclick = () => openLightbox(file);
+    return thumb;
+  }));
+}
+
+/* Menu photos are the reason zoom exists here: the print is small and people
+   read them on a phone. Pointer events cover mouse, touch and pen alike. */
+let zoom = 1, panX = 0, panY = 0;
+const pointers = new Map();
+let pinchStart = 0, zoomStart = 1, lastTap = 0;
+
+function applyZoom() {
+  $("lbImg").style.transform =
+    `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  $("lbPct").textContent = Math.round(zoom * 100) + "%";
+  $("lbStage").classList.toggle("grabbable", zoom > 1);
+}
+
+function setZoom(next, originX, originY) {
+  const clamped = Math.min(8, Math.max(1, next));
+  if (clamped === 1) {
+    panX = panY = 0;                       // snap back rather than drift
+  } else if (originX != null) {
+    // Keep the point under the cursor/fingers put as the scale changes.
+    const factor = clamped / zoom;
+    const rect = $("lbStage").getBoundingClientRect();
+    const cx = originX - rect.left - rect.width / 2;
+    const cy = originY - rect.top - rect.height / 2;
+    panX = cx - (cx - panX) * factor;
+    panY = cy - (cy - panY) * factor;
+  }
+  zoom = clamped;
+  applyZoom();
+}
+
+function openLightbox(file) {
+  $("lbImg").src = `/menu/${file.id}`;
+  $("lbImg").alt = file.filename;
+  zoom = 1; panX = panY = 0;
+  applyZoom();
+  $("lightbox").classList.remove("hidden");
+  document.body.classList.add("noScroll");
+}
+
+function closeLightbox() {
+  $("lightbox").classList.add("hidden");
+  document.body.classList.remove("noScroll");
+  $("lbImg").src = "";                     // stop it holding the image in memory
+  pointers.clear();
+}
+
+function wireLightbox() {
+  const stage = $("lbStage");
+
+  $("lbIn").onclick = () => setZoom(zoom * 1.4);
+  $("lbOut").onclick = () => setZoom(zoom / 1.4);
+  $("lbReset").onclick = () => setZoom(1);
+  $("lbClose").onclick = closeLightbox;
+  // A tap on the backdrop closes; a tap on the image itself must not.
+  $("lightbox").onclick = (e) => { if (e.target === $("lightbox")) closeLightbox(); };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("lightbox").classList.contains("hidden")) {
+      closeLightbox();
+    }
+  });
+
+  stage.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+  }, { passive: false });
+
+  stage.addEventListener("pointerdown", (e) => {
+    stage.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      pinchStart = spread();
+      zoomStart = zoom;
+    } else {
+      const now = Date.now();
+      if (now - lastTap < 300) setZoom(zoom > 1 ? 1 : 2.5, e.clientX, e.clientY);
+      lastTap = now;
+    }
+  });
+
+  stage.addEventListener("pointermove", (e) => {
+    const previous = pointers.get(e.pointerId);
+    if (!previous) return;
+    const next = { x: e.clientX, y: e.clientY };
+
+    if (pointers.size === 2) {
+      pointers.set(e.pointerId, next);
+      const [a, b] = [...pointers.values()];
+      if (pinchStart > 0) {
+        setZoom(zoomStart * (spread() / pinchStart),
+                (a.x + b.x) / 2, (a.y + b.y) / 2);
+      }
+      return;
+    }
+    if (zoom > 1) {                        // panning only makes sense zoomed in
+      panX += next.x - previous.x;
+      panY += next.y - previous.y;
+      applyZoom();
+    }
+    pointers.set(e.pointerId, next);
+  });
+
+  const release = (e) => {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinchStart = 0;
+  };
+  stage.addEventListener("pointerup", release);
+  stage.addEventListener("pointercancel", release);
+}
+
+function spread() {
+  const [a, b] = [...pointers.values()];
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 // --- wiring ---------------------------------------------------------------
@@ -265,6 +409,7 @@ $("pubTabs").onclick = (event) => {
   }
 };
 
+wireLightbox();
 $("pName").value = myName();
 $("pVenmo").value = myVenmo();
 load().then(() => {

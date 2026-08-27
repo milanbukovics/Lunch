@@ -52,6 +52,117 @@ function toast(message, isError) {
   toastTimer = setTimeout(() => (node.className = "toast"), 2600);
 }
 
+// --- menu files -----------------------------------------------------------
+// Menus belong to a restaurant, not a day: upload once and every future day at
+// that place shows it. That needs the Place field filled in.
+
+function renderMenuAdmin() {
+  const place = state.place.trim();
+  const files = state.menu || [];
+
+  $("menuPlaceHint").textContent = place
+    ? `Saved for ${place}, so it comes back every time you order from there.`
+    : "Set the Place above first — menus are saved per restaurant.";
+  $("menuPick").disabled = !place;
+  $("menuPickWrap").classList.toggle("disabled", !place);
+
+  $("adminMenuStrip").replaceChildren(...files.map((file) => {
+    const wrap = el("div", "menuItem");
+    if (file.kind === "pdf") {
+      const link = el("a", "menuPdf", file.filename);
+      link.href = `/menu/${file.id}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      wrap.append(link);
+    } else {
+      const thumb = el("a", "menuThumb");
+      thumb.href = `/menu/${file.id}`;
+      thumb.target = "_blank";
+      thumb.rel = "noopener";
+      const img = el("img");
+      img.src = `/menu/${file.id}`;
+      img.alt = file.filename;
+      thumb.append(img);
+      wrap.append(thumb);
+    }
+    const drop = el("button", "x", "×");
+    drop.type = "button";
+    drop.title = `Remove ${file.filename}`;
+    drop.onclick = () => removeMenuFile(file.id);
+    wrap.append(drop);
+    return wrap;
+  }));
+}
+
+/* Phone photos run to several megabytes, which is slow on office wifi and
+   wasteful in the database. Redrawing through a canvas cuts that to a few
+   hundred KB. 2400px is deliberately generous -- the whole point is being able
+   to zoom in and read small print. PDFs are uploaded untouched. */
+const MAX_EDGE = 2400;
+
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("bad image")),
+                    "image/jpeg", 0.85);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Couldn't read ${file.name} — try a JPG, PNG or PDF`));
+    };
+    img.src = url;
+  });
+}
+
+async function uploadMenuFiles(files) {
+  const place = state.place.trim();
+  if (!place) return toast("Set the Place first", true);
+
+  for (const file of files) {
+    try {
+      let blob = file, name = file.name;
+      if (file.type !== "application/pdf") {
+        blob = await shrinkImage(file);
+        name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+      }
+      const form = new FormData();
+      form.append("place", place);
+      form.append("file", blob, name);
+      const response = await fetch("/api/menu-file", { method: "POST", body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Upload failed");
+      state.menu = data.menu;
+    } catch (err) {
+      toast(err.message, true);
+      break;                        // a cap or a bad file: stop, don't spam
+    }
+  }
+  renderMenuAdmin();
+}
+
+async function removeMenuFile(id) {
+  try {
+    const response = await fetch("/api/menu-file/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, place: state.place.trim() }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not remove it");
+    state.menu = data.menu;
+    renderMenuAdmin();
+    toast("Removed");
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 // --- render ---------------------------------------------------------------
 
 function render() {
@@ -89,6 +200,7 @@ function render() {
     (p) => p.status === "paid" && p.change !== "0.00" && !p.change_given).length;
   $("changeBadge").textContent = owedCount ? String(owedCount) : "";
 
+  renderMenuAdmin();
   renderTally();
   renderPeople();
   renderCall();
@@ -596,6 +708,12 @@ $("payMethod").onclick = (event) => {
   if (!button || button.dataset.m === state.restaurant_method) return;
   send("/api/receipt", { method: button.dataset.m },
        button.dataset.m === "card" ? "Paying by card" : "Paying with cash");
+};
+
+$("menuPick").onchange = (event) => {
+  const files = [...event.target.files];
+  event.target.value = "";        // so picking the same file twice still fires
+  if (files.length) uploadMenuFiles(files);
 };
 
 $("place").onchange = () => send("/api/place", { place: $("place").value }, "Place saved");

@@ -15,8 +15,10 @@ mutation here runs inside one locked transaction instead -- see `edit_day`.
 
 import json
 import os
+import secrets
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import lunchcore as core
 
@@ -24,6 +26,7 @@ _engine = None
 _meta = None
 _days = None
 _menus = None
+_files = None
 _lock = threading.Lock()        # several requests can reach _connect() at once
 _write_lock = threading.Lock()  # serialises SQLite writes (see _write_txn)
 
@@ -41,7 +44,7 @@ def using_db():
 def _connect():
     """Build the engine and tables on first use, so the file backend never
     imports SQLAlchemy at all."""
-    global _engine, _meta, _days, _menus
+    global _engine, _meta, _days, _menus, _files
     if _engine is not None:
         return _engine
 
@@ -49,7 +52,8 @@ def _connect():
         if _engine is not None:
             return _engine
 
-        from sqlalchemy import Column, MetaData, String, Table, Text, create_engine
+        from sqlalchemy import (Column, Integer, LargeBinary, MetaData, String,
+                                Table, Text, create_engine)
 
         url = database_url()
         # Render hands out the old postgres:// prefix that SQLAlchemy 2 rejects
@@ -70,18 +74,29 @@ def _connect():
         menus = Table("menus", meta,
                       Column("place", String(200), primary_key=True),
                       Column("data", Text, nullable=False))
+        # Menu photos/PDFs live here rather than on disk: hosts wipe the
+        # filesystem on every deploy, and these must survive that.
+        menu_files = Table("menu_files", meta,
+                           Column("id", String(32), primary_key=True),
+                           Column("place", String(200), nullable=False, index=True),
+                           Column("filename", String(255), nullable=False),
+                           Column("mime", String(100), nullable=False),
+                           Column("size", Integer, nullable=False),
+                           Column("uploaded", String(32), nullable=False),
+                           Column("data", LargeBinary, nullable=False))
         meta.create_all(engine, checkfirst=True)
         # publish only once fully built, so no thread sees a half-set-up module
-        _meta, _days, _menus, _engine = meta, days, menus, engine
+        _meta, _days, _menus, _files, _engine = (meta, days, menus, menu_files,
+                                                 engine)
     return _engine
 
 
 def reset_for_tests():
     """Drop the cached engine so a test can point DATABASE_URL somewhere new."""
-    global _engine, _meta, _days, _menus
+    global _engine, _meta, _days, _menus, _files
     if _engine is not None:
         _engine.dispose()
-    _engine = _meta = _days = _menus = None
+    _engine = _meta = _days = _menus = _files = None
 
 
 def _tune_sqlite(engine):
@@ -274,6 +289,121 @@ def learn_item(place, desc, price_cents):
             items.append({"desc": desc, "price_cents": price_cents})
             items.sort(key=lambda i: i["desc"].casefold())
         _upsert(conn, _menus, _menus.c.place, key, json.dumps(items))
+
+
+# --- menu photos and PDFs --------------------------------------------------
+# Kept per place, not per day: a restaurant's menu is the same every visit, so
+# uploading once serves every future day and keeps the stored bytes tiny.
+
+MENU_DIR_NAME = "menus"
+MENU_INDEX_NAME = "index.json"
+EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+              "image/webp": ".webp", "application/pdf": ".pdf"}
+
+
+def _menu_dir():
+    return core.DATA_DIR / MENU_DIR_NAME
+
+
+def _menu_index():
+    path = _menu_dir() / MENU_INDEX_NAME
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_menu_index(index):
+    _menu_dir().mkdir(parents=True, exist_ok=True)
+    (_menu_dir() / MENU_INDEX_NAME).write_text(json.dumps(index, indent=2),
+                                               encoding="utf-8")
+
+
+def _meta_of(row):
+    """Metadata only. The bytes are never included in a listing."""
+    return {"id": row["id"], "place": row["place"], "filename": row["filename"],
+            "mime": row["mime"], "size": row["size"], "uploaded": row["uploaded"]}
+
+
+def save_menu_file(place, filename, mime, blob):
+    """Store one menu file against a place. Returns its id."""
+    file_id = secrets.token_hex(16)
+    record = {"id": file_id, "place": place, "filename": filename, "mime": mime,
+              "size": len(blob),
+              "uploaded": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+    if not using_db():
+        _menu_dir().mkdir(parents=True, exist_ok=True)
+        (_menu_dir() / (file_id + EXTENSIONS.get(mime, ""))).write_bytes(blob)
+        with _write_lock:
+            index = _menu_index()
+            index[file_id] = record
+            _write_menu_index(index)
+        return file_id
+
+    from sqlalchemy import insert
+    _connect()
+    with _write_txn() as conn:
+        conn.execute(insert(_files).values(data=blob, **record))
+    return file_id
+
+
+def list_menu_files(place):
+    """Metadata for one place's menu files, oldest first."""
+    if not using_db():
+        rows = [r for r in _menu_index().values() if r["place"] == place]
+        return sorted((_meta_of(r) for r in rows), key=lambda r: r["uploaded"])
+
+    from sqlalchemy import select
+    _connect()
+    columns = [_files.c.id, _files.c.place, _files.c.filename, _files.c.mime,
+               _files.c.size, _files.c.uploaded]
+    engine = _connect()
+    with engine.connect() as conn:
+        rows = conn.execute(select(*columns).where(_files.c.place == place)
+                            .order_by(_files.c.uploaded)).mappings().all()
+    return [_meta_of(r) for r in rows]
+
+
+def load_menu_file(file_id):
+    """(metadata, bytes) for one file, or (None, None)."""
+    if not using_db():
+        record = _menu_index().get(file_id)
+        if record is None:
+            return None, None
+        path = _menu_dir() / (file_id + EXTENSIONS.get(record["mime"], ""))
+        try:
+            return _meta_of(record), path.read_bytes()
+        except OSError:
+            return None, None
+
+    from sqlalchemy import select
+    engine = _connect()
+    with engine.connect() as conn:
+        row = conn.execute(select(_files).where(_files.c.id == file_id)
+                           ).mappings().first()
+    return (_meta_of(row), row["data"]) if row else (None, None)
+
+
+def delete_menu_file(file_id):
+    """True if something was removed."""
+    if not using_db():
+        with _write_lock:
+            index = _menu_index()
+            record = index.pop(file_id, None)
+            if record is None:
+                return False
+            _write_menu_index(index)
+        path = _menu_dir() / (file_id + EXTENSIONS.get(record["mime"], ""))
+        path.unlink(missing_ok=True)
+        return True
+
+    from sqlalchemy import delete
+    _connect()
+    with _write_txn() as conn:
+        return conn.execute(delete(_files).where(_files.c.id == file_id)).rowcount > 0
 
 
 # --- helpers that read through whichever backend is active -----------------

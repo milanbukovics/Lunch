@@ -14,7 +14,7 @@ import secrets
 import threading
 from functools import wraps
 
-from flask import (Flask, jsonify, redirect, render_template, request,
+from flask import (Flask, Response, jsonify, redirect, render_template, request,
                    session, url_for)
 
 import lunchcore as core
@@ -22,6 +22,9 @@ import store
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+# Menu photos come off phones. Anything larger than this is a mistake.
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
+MENU_FILE_LIMIT = 6          # per place
 
 def _local_password():
     """The password for local use, kept OUT of this repo.
@@ -139,6 +142,7 @@ def public_view(day):
         "place": day["place"],
         "locked": bool(day.get("locked")),
         "organiser": day.get("organiser", ""),
+        "menu": menu_view(day["place"]),
         "orders": [{"name": o["name"],
                     "items": [i["desc"] for i in o["items"]],
                     "method": core.method_of(o),
@@ -212,6 +216,7 @@ def admin_view(day):
         "date": day["date"],
         "place": day["place"],
         "locked": bool(day.get("locked")),
+        "menu": menu_view(day["place"]),
         "suggestions": menu_suggestions(day["place"]),
         "people": [person_view(o, day["place"]) for o in day["orders"]],
         "groups": [{"desc": g["desc"], "count": g["count"], "names": g["names"],
@@ -316,6 +321,92 @@ def admin():
 @admin_required
 def history():
     return render_template("history.html")
+
+
+# --- menu files ------------------------------------------------------------
+
+def sniff_type(blob):
+    """The real type, read from the bytes themselves.
+
+    Never trust the browser's Content-Type or the file extension here: these
+    bytes get served back to other people from our own origin, so an HTML file
+    called menu.jpg would otherwise run as a page on this site.
+    """
+    if blob[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if blob[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if blob[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        return "image/webp"
+    if blob[:5] == b"%PDF-":
+        return "application/pdf"
+    return None
+
+
+def menu_view(place):
+    """What the pages need to show a menu: never the bytes."""
+    if not place:
+        return []
+    return [{"id": f["id"], "filename": f["filename"],
+             "kind": "pdf" if f["mime"] == "application/pdf" else "image"}
+            for f in store.list_menu_files(place)]
+
+
+@app.get("/menu/<file_id>")
+def menu_file(file_id):
+    """Public: coworkers have to be able to read the menu."""
+    meta, blob = store.load_menu_file(file_id)
+    if meta is None:
+        return jsonify({"error": "No such file"}), 404
+    return Response(blob, mimetype=meta["mime"], headers={
+        # The stored mime came from sniff_type, not from the uploader.
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+        # Ids are unique per upload, so a cached copy can never be stale.
+        "Cache-Control": "public, max-age=86400",
+    })
+
+
+@app.post("/api/menu-file")
+@admin_required
+def upload_menu_file():
+    place = (request.form.get("place") or "").strip()
+    if not place:
+        return jsonify({"error": "Set the Place first — menus are saved "
+                                 "per restaurant."}), 400
+
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "Pick a file"}), 400
+
+    blob = upload.read()
+    if not blob:
+        return jsonify({"error": "That file is empty"}), 400
+
+    mime = sniff_type(blob)
+    if mime is None:
+        return jsonify({"error": "That isn't a photo or a PDF"}), 400
+
+    if len(store.list_menu_files(place)) >= MENU_FILE_LIMIT:
+        return jsonify({"error": f"{place} already has {MENU_FILE_LIMIT} menu "
+                                 "files — remove one first."}), 400
+
+    name = os.path.basename(upload.filename)[:120]
+    store.save_menu_file(place, name, mime, blob)
+    return jsonify({"menu": menu_view(place)})
+
+
+@app.post("/api/menu-file/delete")
+@admin_required
+def remove_menu_file():
+    body = request.get_json(silent=True) or {}
+    file_id = (body.get("id") or "").strip()
+    place = (body.get("place") or "").strip()
+    if not store.delete_menu_file(file_id):
+        return jsonify({"error": "No such file"}), 404
+    return jsonify({"menu": menu_view(place)})
 
 
 # --- public API ------------------------------------------------------------

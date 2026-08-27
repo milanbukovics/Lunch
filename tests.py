@@ -252,6 +252,38 @@ class Server:
             except Exception:
                 return e.code, {}
 
+    def upload(self, op, place, filename, blob, mime="image/jpeg"):
+        """Minimal multipart/form-data — avoids a test-only dependency."""
+        boundary = "----lunchtest"
+        parts = []
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; '
+                     f'name="place"\r\n\r\n{place}\r\n'.encode())
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; '
+                     f'name="file"; filename="{filename}"\r\n'
+                     f'Content-Type: {mime}\r\n\r\n'.encode())
+        parts.append(blob)
+        parts.append(f'\r\n--{boundary}--\r\n'.encode())
+        body = b"".join(parts)
+        req = urllib.request.Request(
+            self.base + "/api/menu-file", data=body, method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with (op or self.anon()).open(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read())
+            except Exception:
+                return e.code, {}
+
+    def raw(self, path, op=None):
+        """Bytes and headers, for checking what /menu/<id> actually serves."""
+        try:
+            with (op or self.anon()).open(self.base + path) as r:
+                return r.status, r.read(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), dict(e.headers)
+
     def login(self, op, name, password="pw"):
         data = urllib.parse.urlencode({"name": name, "password": password}).encode()
         try:
@@ -318,12 +350,12 @@ def test_web(srv, D):
     _, payload = srv.post("/api/public/order", date=D, name="Ian",
                           item="Long Rice", method="cash")
     check("today is Milan's (he touched it first)",
-          payload["organiser"] == "Milan", repr(payload["organiser"]))
+          payload.get("organiser") == "Milan", str(payload)[:120])
     srv.post("/api/place", op=op, date=D, place="Elsewhere")   # Someone edits it
-    _, payload = srv.post("/api/public/order", date=D, name="Ron",
-                          item="Beef", method="cash")
+    code, payload = srv.post("/api/public/order", date=D, name="Ron",
+                             item="Beef", method="cash")
     check("a later organiser does not take it over",
-          payload["organiser"] == "Milan", repr(payload["organiser"]))
+          payload.get("organiser") == "Milan", f"HTTP {code} {str(payload)[:120]}")
 
     fresh = core.shift_date(D, -30)
     _, raw = srv.get(f"/api/public/day?date={fresh}")
@@ -473,6 +505,106 @@ def test_login_claims_day(srv, D):
           str([(r["date"], r["people"]) for r in rows]))
 
 
+# A real 1x1 PNG and the smallest thing a PDF reader will accept.
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082")
+PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+
+
+def test_menu_files(srv, D):
+    section("ONLY THE ORGANISER CAN UPLOAD A MENU")
+    place = "Monarch Seafood"
+    code, _ = srv.upload(None, place, "menu.png", PNG, "image/png")
+    check("anonymous upload refused", code in (401, 403), f"HTTP {code}")
+    code, _ = srv.post("/api/menu-file/delete", id="whatever", place=place)
+    check("anonymous delete refused", code in (401, 403), f"HTTP {code}")
+
+    admin = srv.user()
+    srv.login(admin, "Milan")
+
+    section("ONLY REAL PHOTOS AND PDFs GET IN")
+    code, err = srv.upload(admin, place, "menu.jpg", b"this is just text",
+                           "image/jpeg")
+    check("a text file renamed .jpg is rejected", code == 400, str(err))
+    # The dangerous one: HTML served from our own origin would run as a page.
+    code, err = srv.upload(admin, place, "menu.jpg",
+                           b"<html><script>alert(1)</script></html>", "image/jpeg")
+    check("HTML disguised as an image is rejected", code == 400, str(err))
+    code, err = srv.upload(admin, "", "menu.png", PNG, "image/png")
+    check("upload with no Place is refused", code == 400, str(err))
+
+    section("A PHOTO AND A PDF ROUND-TRIP")
+    code, data = srv.upload(admin, place, "front.png", PNG, "image/png")
+    check("photo accepted", code == 200, str(data)[:80])
+    code, data = srv.upload(admin, place, "specials.pdf", PDF, "application/pdf")
+    check("pdf accepted", code == 200, str(data)[:80])
+    kinds = sorted(f["kind"] for f in data["menu"])
+    check("one image and one pdf listed", kinds == ["image", "pdf"], str(kinds))
+
+    image = next(f for f in data["menu"] if f["kind"] == "image")
+    code, blob, headers = srv.raw(f"/menu/{image['id']}")
+    check("served to anyone, no login", code == 200)
+    check("exact bytes come back", blob == PNG, f"{len(blob)} bytes")
+    check("served as the sniffed type, not the claimed one",
+          headers.get("Content-Type") == "image/png",
+          headers.get("Content-Type"))
+    check("nosniff header set", headers.get("X-Content-Type-Options") == "nosniff")
+
+    section("MENUS FOLLOW THE RESTAURANT, NOT THE DAY")
+    later = core.shift_date(D, 40)
+    srv.post("/api/place", op=admin, date=later, place=place)
+    _, raw = srv.get(f"/api/public/day?date={later}")
+    check("a future day at the same place shows it",
+          len(json.loads(raw)["menu"]) == 2, raw[:120])
+
+    elsewhere = core.shift_date(D, 41)
+    srv.post("/api/place", op=admin, date=elsewhere, place="Somewhere Else")
+    _, raw = srv.get(f"/api/public/day?date={elsewhere}")
+    check("a different restaurant shows nothing",
+          json.loads(raw)["menu"] == [], raw[:120])
+
+    section("SIX FILES IS THE LIMIT")
+    for _ in range(4):
+        srv.upload(admin, place, "more.png", PNG, "image/png")
+    code, err = srv.upload(admin, place, "seventh.png", PNG, "image/png")
+    check("the seventh is refused", code == 400, str(err))
+
+    section("REMOVING ONE")
+    code, data = srv.post("/api/menu-file/delete", op=admin,
+                          id=image["id"], place=place)
+    check("delete accepted", code == 200)
+    check("gone from the listing",
+          all(f["id"] != image["id"] for f in data["menu"]))
+    code, _, _ = srv.raw(f"/menu/{image['id']}")
+    check("and gone from /menu/<id>", code == 404, f"HTTP {code}")
+
+    section("THE PRICE BOX STILL CLEARS THE $")
+    _, css = srv.get("/static/style.css")
+    check("padding rule is specific enough to survive the shorthand",
+          "input.editPrice" in css)
+
+
+def test_menu_files_on_disk():
+    """The same behaviour with no database, where files land under data/."""
+    section("MENU FILES WITHOUT A DATABASE")
+    saved = os.environ.pop("DATABASE_URL")
+    store.reset_for_tests()
+    try:
+        file_id = store.save_menu_file("Diner", "m.png", "image/png", PNG)
+        listed = store.list_menu_files("Diner")
+        check("listed for its place", len(listed) == 1 and listed[0]["id"] == file_id)
+        check("listing carries no bytes", "data" not in listed[0], str(listed[0]))
+        meta, blob = store.load_menu_file(file_id)
+        check("bytes round-trip", blob == PNG and meta["mime"] == "image/png")
+        check("other places unaffected", store.list_menu_files("Elsewhere") == [])
+        check("delete works", store.delete_menu_file(file_id))
+        check("and it's gone", store.load_menu_file(file_id) == (None, None))
+    finally:
+        os.environ["DATABASE_URL"] = saved
+        store.reset_for_tests()
+
+
 def test_concurrency(srv, D):
     """The reason the database exists: two people ordering in the same second."""
     section("TWENTY PEOPLE ORDER AT ONCE")
@@ -509,10 +641,12 @@ def main():
             D = core.today_str()
             test_web(srv, D)
             test_same_name(srv, D)
+            test_menu_files(srv, D)
             test_concurrency(srv, D)
             test_login_claims_day(srv, D)   # last: it claims today
         finally:
             srv.stop()
+        test_menu_files_on_disk()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
 

@@ -32,6 +32,10 @@
         <input id="pName" required>
         <p class="hint hidden" id="nameHint"></p>
       </div>
+      <div class="f hidden" id="menuBox">
+        <span>The menu</span>
+        <div class="menuStrip" id="menuStrip"></div>
+      </div>
       <div class="f">
         <span>What would you like to have for lunch today?</span>
         <input id="pItem" required>
@@ -63,6 +67,17 @@
   </section>
 
 </main>
+
+<div id="lightbox" class="lightbox hidden">
+  <div class="lbBar">
+    <button id="lbOut" type="button" title="Zoom out">&minus;</button>
+    <span id="lbPct">100%</span>
+    <button id="lbIn" type="button" title="Zoom in">+</button>
+    <button id="lbReset" type="button">Reset</button>
+    <button id="lbClose" type="button" title="Close">&times;</button>
+  </div>
+  <div class="lbStage" id="lbStage"><img id="lbImg" alt="Menu"></div>
+</div>
 
 <div id="toast" class="toast"></div>
 <script src="{{ url_for('static', filename='order.js') }}"></script>

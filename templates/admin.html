@@ -64,6 +64,16 @@
     </form>
     <p class="hint" id="orderHint">Prices come later from the receipt â€” just take the order and the cash.</p>
 
+    <div class="menuAdmin">
+      <h3 class="groupHead">Menu <small>shown to everyone on the order page</small></h3>
+      <p class="hint" id="menuPlaceHint"></p>
+      <div class="menuStrip" id="adminMenuStrip"></div>
+      <label class="linkBtn" id="menuPickWrap">
+        + add a photo or PDF
+        <input id="menuPick" type="file" accept="image/*,application/pdf" multiple hidden>
+      </label>
+    </div>
+
     <div id="tally" class="tally"></div>
     <div id="peopleList" class="list"></div>
   </section>
