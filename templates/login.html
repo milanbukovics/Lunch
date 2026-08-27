@@ -12,8 +12,15 @@
   <p class="hint">Only whoever is picking up lunch needs this.</p>
   <form method="post">
     <div class="f">
+      <span>Your name</span>
+      <input name="name" value="{{ name }}" placeholder="first name is fine"
+             autofocus required>
+      <p class="hint">Recorded as whoever ran lunch that day, and shown to
+        coworkers so they know who to ask.</p>
+    </div>
+    <div class="f">
       <span>Password</span>
-      <input type="password" name="password" autofocus required>
+      <input type="password" name="password" required>
     </div>
     {% if error %}<p class="loginErr">{{ error }}</p>{% endif %}
     <button class="primary wide" type="submit">Log in</button>

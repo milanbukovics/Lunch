@@ -34,7 +34,9 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-function table(node, headers, rows) {
+// textCols = how many leading columns are words rather than figures. Only the
+// figures get right-aligned; names and places read better flush left.
+function table(node, headers, rows, textCols = 1) {
   node.replaceChildren();
   const head = node.createTHead().insertRow();
   for (const h of headers) {
@@ -55,15 +57,16 @@ function table(node, headers, rows) {
     row.forEach((value, i) => {
       const cell = tr.insertCell();
       cell.textContent = value;
-      if (i) cell.className = "num";
+      if (i >= textCols) cell.className = "num";
     });
   }
 }
 
 fetch("/api/history").then((r) => r.json()).then((data) => {
-  table($("daysTable"), ["Date", "Place", "People", "Items", "Bill", "Surplus"],
-        data.days.map((d) => [d.date, d.place || "—", d.people,
-                              "$" + d.items, "$" + d.bill, "$" + d.surplus]));
+  table($("daysTable"),
+        ["Date", "Place", "Picked up by", "People", "Items", "Bill", "Surplus"],
+        data.days.map((d) => [d.date, d.place || "—", d.organiser || "—", d.people,
+                              "$" + d.items, "$" + d.bill, "$" + d.surplus]), 3);
   table($("peopleTable"), ["Person", "Total ordered"],
         data.people.map((p) => [p.name, "$" + p.total]));
   table($("placesTable"), ["Place", "Total ordered"],

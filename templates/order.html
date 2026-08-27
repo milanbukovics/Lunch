@@ -11,8 +11,11 @@
 <header class="topbar">
   <div class="brand">Lunch</div>
   <div class="pubWhen"><span id="pubPlace">—</span><span id="pubDate"></span></div>
-  <span id="lockPill" class="lockPill hidden">Orders closed</span>
-  <a class="organiserLink" href="{{ url_for('admin') }}">Organiser</a>
+  <div class="topRight">
+    <span id="pubOrganiser" class="organiserPill hidden"></span>
+    <span id="lockPill" class="lockPill hidden">Orders closed</span>
+    <a class="organiserLink" href="{{ url_for('admin') }}">Organiser</a>
+  </div>
 </header>
 
 <nav class="steps" id="pubTabs">
@@ -30,8 +33,8 @@
       </div>
       <div class="f">
         <span>What do you want?</span>
-        <input id="pItem" list="menuList" required placeholder="start typing…">
-        <datalist id="menuList"></datalist>
+        <input id="pItem" required placeholder="anything you like">
+        <p class="hint">Type whatever you want — there's no set menu here.</p>
       </div>
       <div class="f">
         <span>Paying with</span>

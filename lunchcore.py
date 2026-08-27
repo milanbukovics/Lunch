@@ -195,7 +195,7 @@ def today_str():
 def new_day(day_date=None):
     return {"date": day_date or today_str(), "place": "", "orders": [],
             "receipt_cents": None, "restaurant_paid_cents": None,
-            "restaurant_method": None, "locked": False}
+            "restaurant_method": None, "locked": False, "organiser": ""}
 
 
 def day_path(day_date):
@@ -229,6 +229,7 @@ def load_day(day_date):
     day.setdefault("restaurant_paid_cents", None)  # tracking still load cleanly
     day.setdefault("restaurant_method", None)      # None = inherit / default cash
     day.setdefault("locked", False)                # True = public ordering closed
+    day.setdefault("organiser", "")                # who picked up; "" = unrecorded
     return day
 
 

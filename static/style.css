@@ -342,15 +342,22 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .pubWhen span:first-child { font-weight: 650; }
 .pubWhen span + span { font-size: 12.5px; opacity: .8; }
 
-.lockPill { margin-left: auto; background: rgba(255,255,255,.22);
-            padding: 5px 13px; border-radius: 20px; font-size: 13px; font-weight: 650; }
+/* One wrapper holds the whole right-hand side, so a single margin-left:auto
+   does the pushing. Three competing autos would split the free space between
+   them and scatter the items across the bar. */
+.topRight { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+/* "Orders closed" and "<name> is picking up" */
+.lockPill, .organiserPill {
+  background: rgba(255,255,255,.22);
+  padding: 5px 13px; border-radius: 20px; font-size: 13px; font-weight: 650;
+}
 
 /* Whoever is picking up needs a way into the admin side without being told to
    type /admin. Understated on purpose -- coworkers should ignore it, and it
-   gives nothing away: the page behind it asks for the password.
-   margin-left:auto on both means the pill wins the gap when it is showing. */
+   gives nothing away: the page behind it asks for the password. */
 .organiserLink {
-  margin-left: auto; color: #fff; text-decoration: none;
+  color: #fff; text-decoration: none;
   background: rgba(255,255,255,.15); border-radius: 9px;
   padding: 7px 13px; font-size: 13px; font-weight: 600; opacity: .85;
   transition: background .15s, opacity .15s;

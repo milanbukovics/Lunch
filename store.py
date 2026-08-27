@@ -174,6 +174,7 @@ def _normalise(day, day_date):
     day.setdefault("restaurant_paid_cents", None)
     day.setdefault("restaurant_method", None)
     day.setdefault("locked", False)
+    day.setdefault("organiser", "")
     return day
 
 

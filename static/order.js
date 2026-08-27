@@ -83,21 +83,17 @@ function render() {
   $("pubDate").textContent = new Date(date + "T12:00").toLocaleDateString(undefined,
     { weekday: "long", month: "long", day: "numeric" });
 
-  // Rebuilding the list under an open dropdown closes it, so leave it alone
-  // while someone is actually typing into the box.
-  if (document.activeElement !== $("pItem")) {
-    $("menuList").replaceChildren(...state.suggestions.map((desc) => {
-      const option = el("option");
-      option.value = desc;
-      return option;
-    }));
-  }
+  // Who to ask, shown all day rather than only once orders close -- by the time
+  // you need to ask, it is too late to go looking for the name.
+  const who = (state.organiser || "").trim();
+  $("pubOrganiser").textContent = who ? `${who} is picking up` : "";
+  $("pubOrganiser").classList.toggle("hidden", !who);
 
   $("lockPill").classList.toggle("hidden", !state.locked);
   $("orderForm").classList.toggle("hidden", state.locked);
-  $("closedNote").textContent = state.locked
-    ? "Orders are closed for today — talk to whoever is picking up if you need a change."
-    : "";
+  $("closedNote").textContent = !state.locked ? ""
+    : who ? `Orders are closed — talk to ${who} if you need a change.`
+          : "Orders are closed for today — talk to whoever is picking up if you need a change.";
 
   const count = state.orders.reduce((n, o) => n + o.items.length, 0);
   $("allCount").textContent = count ? String(count) : "";

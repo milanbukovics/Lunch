@@ -181,6 +181,14 @@ Only what you typed is stored. Totals are recalculated every time and never save
 
 Everything saves the instant you change it. There's no save button and nothing to lose.
 
+## Tests
+
+```bash
+python tests.py
+```
+
+Runs everything against a temporary directory and a throwaway SQLite database, so `data/` is never opened. Covers the money rules (including the real Aug 20 day as a fixture, which must still reconcile to $142 collected / $137 on hand / $10.70 left), the cash-versus-Venmo split, card mode, storage parity between the file and database backends, that the public page exposes no money, that admin routes reject anonymous callers, and that twenty simultaneous orders all land.
+
 ## Under the hood
 
 - `app.py` — the Flask app: pages, JSON API, and the admin password check

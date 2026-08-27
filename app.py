@@ -92,19 +92,29 @@ def admin_required(view):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
+    name = session.get("admin_name", "")
     if request.method == "POST":
         supplied = request.form.get("password", "")
-        if hmac.compare_digest(supplied, ADMIN_PASSWORD):
+        name = (request.form.get("name") or "").strip()
+        # The name is a label, not a second credential -- the password is still
+        # the only thing that grants access.
+        if not name:
+            error = "Enter your name"
+        elif hmac.compare_digest(supplied, ADMIN_PASSWORD):
             session["admin"] = True
+            session["admin_name"] = name
             session.permanent = True
             return redirect(request.args.get("next") or url_for("admin"))
-        error = "Wrong password"
-    return render_template("login.html", error=error), (200 if not error else 401)
+        else:
+            error = "Wrong password"
+    return (render_template("login.html", error=error, name=name),
+            200 if not error else 401)
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
     session.pop("admin", None)
+    session.pop("admin_name", None)
     return redirect(url_for("index"))
 
 
@@ -121,12 +131,15 @@ def public_view(day):
         "date": day["date"],
         "place": day["place"],
         "locked": bool(day.get("locked")),
+        "organiser": day.get("organiser", ""),
         "orders": [{"name": o["name"],
                     "items": [i["desc"] for i in o["items"]],
                     "method": core.method_of(o),
                     "venmo_user": o.get("venmo_user", "")}
                    for o in day["orders"]],
-        "suggestions": menu_suggestions(day["place"]),
+        # No menu suggestions here on purpose. The dropdown read as a menu you
+        # had to pick from, and it handed every anonymous visitor a list of
+        # every dish ever ordered anywhere. The admin box keeps its own.
     }
 
 
@@ -416,6 +429,7 @@ def api_history():
         day = resolved(day_date)
         t = core.totals(day)
         rows.append({"date": day_date, "place": day["place"],
+                     "organiser": day.get("organiser", ""),
                      "people": t["people"], "items": money(t["items_cents"]),
                      "bill": money(t["bill_cents"]),
                      "surplus": money(t["net_surplus_cents"])})
@@ -440,6 +454,11 @@ def _admin_mutation(handler, note_ok=None):
         with store.edit_day(day_date) as day:
             if day.get("restaurant_method") not in ("cash", "card"):
                 day["restaurant_method"] = inherited
+            # Whoever first works a day owns it. Set-if-empty, so opening an old
+            # day later cannot rewrite who actually ran it. Rides the open
+            # transaction -- taking another write lock here would deadlock.
+            if not day.get("organiser"):
+                day["organiser"] = session.get("admin_name", "")
             handler(day, body)
         flush_learn()                      # menu writes, now the day has committed
         return jsonify(admin_view(resolved(day_date)))
