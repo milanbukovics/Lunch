@@ -3,6 +3,10 @@ services:
     name: wasalunch          # -> https://wasalunch.onrender.com
     runtime: python
     plan: free
+    # Match the Neon database's region (us-west-2). Every page load makes
+    # several round trips to Postgres, so app and database sitting in the same
+    # region matters more than either one's distance from Hawaii.
+    region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 60
     envVars:
