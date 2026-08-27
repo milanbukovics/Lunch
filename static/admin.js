@@ -62,9 +62,7 @@ function renderMenuAdmin() {
 
   $("menuPlaceHint").textContent = place
     ? `Saved for ${place}, so it comes back every time you order from there.`
-    : "Set the Place above first — menus are saved per restaurant.";
-  $("menuPick").disabled = !place;
-  $("menuPickWrap").classList.toggle("disabled", !place);
+    : "Name the restaurant in Place above and these save against it.";
 
   $("adminMenuStrip").replaceChildren(...files.map((file) => {
     const wrap = el("div", "menuItem");
@@ -122,9 +120,18 @@ function shrinkImage(file) {
   });
 }
 
+/* A blank Place is the one thing that stops an upload, so say which field to
+   fill and put the cursor in it. Returns false so callers can stop. */
+function needsPlace() {
+  if (state.place.trim()) return false;
+  toast("Name the restaurant first — the menu is saved against it.", true);
+  $("place").focus();
+  return true;
+}
+
 async function uploadMenuFiles(files) {
+  if (needsPlace()) return;
   const place = state.place.trim();
-  if (!place) return toast("Set the Place first", true);
 
   for (const file of files) {
     try {
@@ -715,6 +722,28 @@ $("menuPick").onchange = (event) => {
   event.target.value = "";        // so picking the same file twice still fires
   if (files.length) uploadMenuFiles(files);
 };
+
+// Clicking the zone opens the picker via the <label>. Catch it first so a blank
+// Place explains itself instead of opening a picker that will only fail.
+$("menuPickWrap").addEventListener("click", (event) => {
+  if (needsPlace()) event.preventDefault();
+});
+
+const dropZone = $("menuPickWrap");
+for (const name of ["dragenter", "dragover"]) {
+  dropZone.addEventListener(name, (event) => {
+    event.preventDefault();
+    dropZone.classList.add("over");
+  });
+}
+for (const name of ["dragleave", "drop"]) {
+  dropZone.addEventListener(name, () => dropZone.classList.remove("over"));
+}
+dropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const files = [...event.dataTransfer.files];
+  if (files.length) uploadMenuFiles(files);
+});
 
 $("place").onchange = () => send("/api/place", { place: $("place").value }, "Place saved");
 $("place").onblur = () => { if ($("place").value !== state.place) $("place").onchange(); };

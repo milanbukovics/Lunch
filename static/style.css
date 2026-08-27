@@ -421,7 +421,21 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
   line-height: 1; cursor: pointer; padding: 0;
 }
 .menuItem .x:hover { border-color: var(--red); color: var(--red); }
-.linkBtn.disabled { opacity: .45; cursor: not-allowed; }
+
+/* A dashed target reads as "put a file here" at a glance. It is deliberately
+   never disabled: a greyed-out control gives no reason for being greyed out,
+   so a blank Place points at the Place field instead of ignoring the click. */
+.dropZone {
+  display: flex; flex-direction: column; gap: 3px; align-items: center;
+  margin-top: 12px; padding: 20px 16px; text-align: center;
+  border: 2px dashed var(--line); border-radius: var(--radius);
+  background: var(--bg); cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.dropZone b { color: var(--accent); font-size: 14.5px; }
+.dropZone span { color: var(--muted); font-size: 13px; }
+.dropZone:hover, .dropZone.over { border-color: var(--accent); border-style: solid; }
+.dropZone.over { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
 .lightbox {
   position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.9);

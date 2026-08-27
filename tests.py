@@ -579,6 +579,18 @@ def test_menu_files(srv, D):
     code, _, _ = srv.raw(f"/menu/{image['id']}")
     check("and gone from /menu/<id>", code == 404, f"HTTP {code}")
 
+    section("THE UPLOAD IS FINDABLE, AND ORGANISER-ONLY")
+    _, page = srv.get("/admin", op=admin)
+    check("reads as a drop target", "Drop a file here" in page)
+    check("says what it is for", "Add a menu photo or PDF" in page)
+    # A disabled control gives no reason for being disabled; the click handler
+    # points at the Place field instead.
+    check("the file input is never disabled in the markup",
+          "disabled" not in page, "found a disabled attribute")
+    _, adminjs = srv.get("/static/admin.js", op=admin)
+    check("a blank Place explains itself", "needsPlace" in adminjs)
+    check("drag and drop wired up", "dataTransfer" in adminjs)
+
     section("THE PRICE BOX STILL CLEARS THE $")
     _, css = srv.get("/static/style.css")
     check("padding rule is specific enough to survive the shorthand",
