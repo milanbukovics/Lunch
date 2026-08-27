@@ -48,16 +48,48 @@ async function load() {
   render();
 }
 
+/* Everyone has this page open at once, so it has to keep up with itself.
+   Without this you only ever see the orders that existed when you opened it. */
+const REFRESH_MS = 8000;
+let refreshTimer;
+
+async function refresh() {
+  try {
+    state = await api(`/api/public/day?date=${date}`);
+    render();
+  } catch {
+    /* A failed poll is not worth a toast -- the next one in 8s probably works,
+       and the person is usually mid-typing when the wifi hiccups. */
+  }
+}
+
+function pollWhenVisible() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === "visible") refresh();
+  }, REFRESH_MS);
+}
+
+// Phones background the page constantly; catch up the moment it comes back
+// rather than making someone wait out the interval staring at stale orders.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refresh();
+});
+
 function render() {
   $("pubPlace").textContent = state.place || "Lunch";
   $("pubDate").textContent = new Date(date + "T12:00").toLocaleDateString(undefined,
     { weekday: "long", month: "long", day: "numeric" });
 
-  $("menuList").replaceChildren(...state.suggestions.map((desc) => {
-    const option = el("option");
-    option.value = desc;
-    return option;
-  }));
+  // Rebuilding the list under an open dropdown closes it, so leave it alone
+  // while someone is actually typing into the box.
+  if (document.activeElement !== $("pItem")) {
+    $("menuList").replaceChildren(...state.suggestions.map((desc) => {
+      const option = el("option");
+      option.value = desc;
+      return option;
+    }));
+  }
 
   $("lockPill").classList.toggle("hidden", !state.locked);
   $("orderForm").classList.toggle("hidden", state.locked);
@@ -160,5 +192,7 @@ $("pubTabs").onclick = (event) => {
 
 $("pName").value = myName();
 $("pVenmo").value = myVenmo();
-load().then(() => { if (!myName()) $("pName").focus(); else $("pItem").focus(); })
-      .catch((err) => toast(err.message, true));
+load().then(() => {
+  if (!myName()) $("pName").focus(); else $("pItem").focus();
+  pollWhenVisible();
+}).catch((err) => toast(err.message, true));

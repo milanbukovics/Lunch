@@ -50,7 +50,11 @@ def lan_address():
 
 
 def seed(app_module):
-    """A few fake orders so the page isn't empty. Only ever on a fresh database."""
+    """A few fake orders so the page isn't empty. Only ever on a fresh database.
+
+    Names carry "(demo)" because on screen there is otherwise nothing to tell
+    them apart from real coworkers, which is alarming the first time you look.
+    """
     import store
 
     today = app_module.core.today_str()
@@ -59,9 +63,9 @@ def seed(app_module):
     with store.edit_day(today) as day:
         day["place"] = "Sandbox Diner"
         for name, desc, method in [
-            ("Alex", "Chicken katsu", "cash"),
-            ("Sam", "Saimin", "cash"),
-            ("Jo", "Garlic shrimp plate", "venmo"),
+            ("Alex (demo)", "Chicken katsu", "cash"),
+            ("Sam (demo)", "Saimin", "cash"),
+            ("Jo (demo)", "Garlic shrimp plate", "venmo"),
         ]:
             order = {"name": name, "items": [{"desc": desc, "price_cents": None}],
                      "paid_cents": None, "method": method}
