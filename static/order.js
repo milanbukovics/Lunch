@@ -22,6 +22,18 @@ function rememberName(name) {
 function myVenmo() {
   try { return localStorage.getItem("lunchVenmo") || ""; } catch { return ""; }
 }
+// The date this browser last ordered under the remembered name. Lets someone
+// add a second item without being asked "is that you?" every time, while a
+// genuinely different person on a different device still gets asked.
+function orderedToday(name) {
+  try {
+    return localStorage.getItem("lunchOrderedOn") === date
+        && myName().trim().toLowerCase() === name.trim().toLowerCase();
+  } catch { return false; }
+}
+function rememberOrdered() {
+  try { localStorage.setItem("lunchOrderedOn", date); } catch { /* private mode */ }
+}
 
 let toastTimer;
 function toast(message, isError) {
@@ -39,7 +51,11 @@ async function api(path, body) {
     : {};
   const response = await fetch(path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Something went wrong");
+  if (!response.ok) {
+    const failure = new Error(data.error || "Something went wrong");
+    failure.data = data;          // callers may need the detail, not just the text
+    throw failure;
+  }
   return data;
 }
 
@@ -172,22 +188,72 @@ $("pMethod").onclick = (event) => {
   $("venmoField").classList.toggle("hidden", method !== "venmo");
 };
 
-$("orderForm").onsubmit = async (event) => {
-  event.preventDefault();
+function hideSamePrompt() {
+  $("samePrompt").classList.add("hidden");
+}
+
+/* Someone typed a name that already has an order. It is usually them adding a
+   second item, but it may be a second person with the same first name -- and
+   merging those two would put both on one rounded total, billing them as one
+   person. Only they can tell us which, so ask. Everything here is built with
+   el(), which sets textContent: the name and items come from coworkers. */
+function askIfSamePerson(info) {
+  const box = $("samePrompt");
+  const items = info.items.join(", ");
+
+  const yes = el("button", "primary", "Yes — add this to my order");
+  yes.type = "button";
+  yes.onclick = () => submitOrder("add");
+
+  const no = el("button", "ghost", `I'm a different ${info.name}`);
+  no.type = "button";
+  no.onclick = () => {
+    hideSamePrompt();
+    const hint = $("nameHint");
+    hint.textContent =
+      `Add a last initial so you two don't get mixed up — "${info.name} B".`;
+    hint.classList.remove("hidden");
+    $("pName").focus();
+    $("pName").select();
+  };
+
+  const buttons = el("div", "sameBtns");
+  buttons.append(yes, no);
+  box.replaceChildren(
+    el("p", null, `${info.name} already ordered ${items}. Is that you?`),
+    buttons);
+  box.classList.remove("hidden");
+}
+
+async function submitOrder(confirm) {
   const name = $("pName").value.trim();
   const item = $("pItem").value.trim();
   if (!name || !item) return;
+
+  const body = { name, item, method, venmo_user: $("pVenmo").value };
+  // Same name, same device, already ordered today -- that is the same person
+  // adding a second item, so don't make them confirm it every time.
+  if (confirm || orderedToday(name)) body.confirm = "add";
+
   try {
-    state = await api("/api/public/order",
-                      { name, item, method, venmo_user: $("pVenmo").value });
+    state = await api("/api/public/order", body);
     rememberName(name);
+    rememberOrdered();
     try { localStorage.setItem("lunchVenmo", $("pVenmo").value.trim()); } catch { /* ignore */ }
     $("pItem").value = "";
+    hideSamePrompt();
+    $("nameHint").classList.add("hidden");
     render();
     toast(`Added ${item}`);
   } catch (err) {
-    toast(err.message, true);
+    if (err.data && err.data.error === "name_taken") askIfSamePerson(err.data);
+    else toast(err.message, true);
   }
+}
+
+$("orderForm").onsubmit = (event) => {
+  event.preventDefault();
+  submitOrder();
 };
 
 $("pubTabs").onclick = (event) => {

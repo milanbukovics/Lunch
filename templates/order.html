@@ -29,11 +29,12 @@
     <form id="orderForm" autocomplete="off">
       <div class="f">
         <span>Your name</span>
-        <input id="pName" required placeholder="first name is fine">
+        <input id="pName" required>
+        <p class="hint hidden" id="nameHint"></p>
       </div>
       <div class="f">
         <span>What would you like to have for lunch today?</span>
-        <input id="pItem" required placeholder="anything you like">
+        <input id="pItem" required>
       </div>
       <div class="f">
         <span>Paying with</span>
@@ -49,6 +50,8 @@
       </div>
       <button class="primary wide" type="submit">Add my order</button>
     </form>
+
+    <div id="samePrompt" class="samePrompt hidden"></div>
 
     <div id="mine" class="list"></div>
     <p class="hint" id="closedNote"></p>

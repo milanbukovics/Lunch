@@ -364,6 +364,16 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 }
 .organiserLink:hover { background: rgba(255,255,255,.3); opacity: 1; }
 
+/* "Ron already ordered X. Is that you?" -- shown when a name is already taken. */
+.samePrompt {
+  margin-top: 14px; padding: 16px 18px;
+  border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: var(--radius); background: var(--surface);
+}
+.samePrompt p { margin: 0 0 12px; }
+.sameBtns { display: flex; flex-wrap: wrap; gap: 10px; }
+.sameBtns button { padding: 10px 14px; }
+
 .pubMain { max-width: 620px; margin: 0 auto; padding: 22px 20px 60px; }
 .pubMain .f { margin-bottom: 15px; }
 .publicPage .panel { padding: 24px; }

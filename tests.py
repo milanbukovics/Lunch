@@ -263,13 +263,23 @@ class Server:
 
 
 def test_web(srv, D):
-    section("THE PUBLIC PAGE LEAKS NOTHING")
+    section("LOGGING IN CLAIMS TODAY")
     srv.post("/api/public/order", date=D, name="Ginger", item="Tripe Stew",
              method="cash")
     srv.post("/api/public/order", date=D, name="Deb", item="Laulau",
              method="venmo", venmo_user="@deb")
+    _, raw = srv.get(f"/api/public/day?date={D}")
+    check("orders alone don't claim the day",
+          json.loads(raw)["organiser"] == "", repr(json.loads(raw)["organiser"]))
+
     admin = srv.user()
     srv.login(admin, "Milan")
+    _, raw = srv.get(f"/api/public/day?date={D}")
+    check("claimed by logging in, before any admin action",
+          json.loads(raw)["organiser"] == "Milan",
+          repr(json.loads(raw)["organiser"]))
+
+    section("THE PUBLIC PAGE LEAKS NOTHING")
     srv.post("/api/price", op=admin, date=D, desc="Tripe Stew", price="8.40")
     srv.post("/api/payment", op=admin, date=D, name="Ginger", paid="20")
 
@@ -333,6 +343,8 @@ def test_web(srv, D):
           "What would you like to have for lunch today?" in html)
     check("the blunt version is gone", "What do you want?" not in html)
     check("the 'no set menu' line is gone", "no set menu" not in html)
+    check("no 'first name is fine' placeholder", "first name is fine" not in html)
+    check("no 'anything you like' placeholder", "anything you like" not in html)
     check("brand appears once, not twice",
           len(re.findall(r">Lunch<", html)) == 1,
           f"{len(re.findall(r'>Lunch<', html))} occurrences")
@@ -374,6 +386,93 @@ def test_web(srv, D):
           f"amount={deb['owed']}" in (deb.get("venmo_link") or ""))
 
 
+def test_same_name(srv, D):
+    """Two coworkers can share a first name. Merging them onto one rounded
+    total bills them as a single person and undercharges the pair."""
+    section("TWO PEOPLE, ONE FIRST NAME")
+    day = core.shift_date(D, -7)
+
+    code, first = srv.post("/api/public/order", date=day, name="Ron",
+                           item="Bento A", method="cash")
+    check("a new name goes straight in", code == 200, f"HTTP {code}")
+
+    code, err = srv.post("/api/public/order", date=day, name="Ron",
+                         item="Saimin", method="cash")
+    check("a repeat name is refused, not merged", code == 409, f"HTTP {code}")
+    check("  ...and says why", err.get("error") == "name_taken", str(err))
+    check("  ...and reports what that Ron already has",
+          err.get("items") == ["Bento A"], str(err.get("items")))
+
+    _, raw = srv.get(f"/api/public/day?date={day}")
+    orders = json.loads(raw)["orders"]
+    check("the refused attempt changed nothing",
+          len(orders) == 1 and orders[0]["items"] == ["Bento A"], str(orders))
+
+    section("SAME RON ADDS A SECOND ITEM")
+    code, state = srv.post("/api/public/order", date=day, name="Ron",
+                           item="Saimin", method="cash", confirm="add")
+    check("confirming merges it", code == 200)
+    ron = [o for o in state["orders"] if o["name"] == "Ron"]
+    check("one row, two items",
+          len(ron) == 1 and ron[0]["items"] == ["Bento A", "Saimin"],
+          str(ron))
+
+    section("A DIFFERENT RON GETS HIS OWN ROW AND HIS OWN BILL")
+    code, state = srv.post("/api/public/order", date=day, name="Ron B",
+                           item="Tripe Stew", method="cash")
+    check("distinct name accepted", code == 200)
+    check("two separate people now", len(state["orders"]) == 2,
+          str([o["name"] for o in state["orders"]]))
+
+    admin = srv.user()
+    srv.login(admin, "Milan")
+    srv.post("/api/price", op=admin, date=day, desc="Bento A", price="10.00")
+    srv.post("/api/price", op=admin, date=day, desc="Saimin", price="10.00")
+    _, adm = srv.post("/api/price", op=admin, date=day, desc="Tripe Stew",
+                      price="10.00")
+    owed = {p["name"]: str(p["owed"]) for p in adm["people"]}
+    # Ron has $20 of food -> 20.94 -> $21.  Ron B has $10 -> 10.47 -> $11.
+    check("Ron owes $21 for two items", owed.get("Ron") == "21", str(owed))
+    check("Ron B is billed separately at $11", owed.get("Ron B") == "11", str(owed))
+
+    # Merging rounds up once rather than once each, so the merged figure is
+    # never higher and is sometimes a dollar lower. It happens to tie at these
+    # amounts; two equal $10 orders show the gap plainly.
+    check("merged is never more than separate",
+          core.owed_dollars(3000) <= core.owed_dollars(2000) + core.owed_dollars(1000),
+          f"merged ${core.owed_dollars(3000)} vs separate "
+          f"${core.owed_dollars(2000) + core.owed_dollars(1000)}")
+    check("two $10 orders: $22 apart but $21 merged",
+          core.owed_dollars(1000) * 2 == 22 and core.owed_dollars(2000) == 21,
+          f"${core.owed_dollars(1000) * 2} apart, ${core.owed_dollars(2000)} merged")
+
+    section("THE ORGANISER'S OWN TYPING STILL MERGES")
+    code, adm = srv.post("/api/order", op=admin, date=day, name="Ron",
+                         item="Extra rice")
+    ron = [p for p in adm["people"] if p["name"] == "Ron"]
+    check("admin adding to an existing name merges as before",
+          code == 200 and len(ron) == 1 and len(ron[0]["items"]) == 3,
+          f"HTTP {code}")
+
+
+def test_login_claims_day(srv, D):
+    """Milan already claimed today by logging in during test_web."""
+    section("A LATER ORGANISER CANNOT TAKE THE DAY OVER")
+    seth = srv.user()
+    srv.login(seth, "Seth")
+    _, raw = srv.get(f"/api/public/day?date={D}")
+    check("still Milan's day after Seth logs in",
+          json.loads(raw)["organiser"] == "Milan",
+          repr(json.loads(raw)["organiser"]))
+
+    section("EMPTY DAYS STAY OUT OF THE HISTORY")
+    _, raw = srv.get("/api/history", op=seth)
+    rows = json.loads(raw)["days"]
+    check("every listed day has orders in it",
+          all(r["people"] > 0 for r in rows),
+          str([(r["date"], r["people"]) for r in rows]))
+
+
 def test_concurrency(srv, D):
     """The reason the database exists: two people ordering in the same second."""
     section("TWENTY PEOPLE ORDER AT ONCE")
@@ -409,7 +508,9 @@ def main():
         try:
             D = core.today_str()
             test_web(srv, D)
+            test_same_name(srv, D)
             test_concurrency(srv, D)
+            test_login_claims_day(srv, D)   # last: it claims today
         finally:
             srv.stop()
     finally:

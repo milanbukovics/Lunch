@@ -104,6 +104,13 @@ def login():
             session["admin"] = True
             session["admin_name"] = name
             session.permanent = True
+            # Claim today straight away, so coworkers ordering first thing see a
+            # real name rather than "the organiser". Set-if-empty, so whoever
+            # logs in first keeps the day. Safe to take the write lock here --
+            # login is not inside another transaction.
+            with store.edit_day(core.today_str()) as day:
+                if not day.get("organiser"):
+                    day["organiser"] = name
             return redirect(request.args.get("next") or url_for("admin"))
         else:
             error = "Wrong password"
@@ -352,6 +359,12 @@ def api_public_order():
             return jsonify({"error": "Orders are closed for today"}), 409
 
         order = find_order(day, name)
+        if order is not None and body.get("confirm") != "add":
+            # Two coworkers can share a first name. Merging them would put both
+            # on one rounded total -- billed as one person, and the pair pays
+            # about a dollar less than they owe. Ask instead of guessing.
+            return jsonify({"error": "name_taken", "name": order["name"],
+                            "items": [i["desc"] for i in order["items"]]}), 409
         if order is None:
             order = {"name": name, "items": [], "paid_cents": None}
             day["orders"].append(order)
@@ -427,6 +440,8 @@ def api_history():
     rows, by_person, by_place = [], {}, {}
     for day_date in store.list_saved_dates():
         day = resolved(day_date)
+        if not day["orders"]:
+            continue          # logging in creates the day; an empty one says nothing
         t = core.totals(day)
         rows.append({"date": day_date, "place": day["place"],
                      "organiser": day.get("organiser", ""),
