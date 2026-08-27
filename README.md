@@ -8,12 +8,14 @@ Hawaii food tax and whole-dollar rounding are built in, so change is always bill
 
 **Locally** — double-click `Lunch.bat`, which serves on `127.0.0.1:8420` and stores days as JSON files in `data/`. No internet, nothing shared.
 
+> **The organiser password** is generated on first run and saved to `data/admin_password.txt`, which is git-ignored. It's printed in the console window the first time. Edit that file to choose your own. There is deliberately no password anywhere in this source — the repo is public.
+
 **Sandbox** — double-click `Sandbox.bat` to try things out. Serves on port **8421** and writes to `sandbox.db`, so it cannot touch your real orders in `data/` — setting `DATABASE_URL` sends every read and write to SQLite instead, so those files are never opened at all. It seeds a few fake orders and prints an address your phone can reach:
 
 ```
   This PC     http://127.0.0.1:8421
   Your phone  http://192.168.1.42:8421      <- same wifi
-  Admin       http://127.0.0.1:8421/admin   password: test
+  Admin       http://127.0.0.1:8421/admin   password: test   (fake data only)
 ```
 
 Delete `sandbox.db` to wipe it and start over.

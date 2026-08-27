@@ -77,7 +77,9 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function render() {
-  $("pubPlace").textContent = state.place || "Lunch";
+  // Blank, not "Lunch" -- the brand beside it already says that, and showing
+  // both reads as "Lunch Lunch" on every day before a place is chosen.
+  $("pubPlace").textContent = state.place || "";
   $("pubDate").textContent = new Date(date + "T12:00").toLocaleDateString(undefined,
     { weekday: "long", month: "long", day: "numeric" });
 

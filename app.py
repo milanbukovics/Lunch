@@ -23,9 +23,32 @@ import store
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
-# The repo is public, so there must be no guessable default in production.
-# Locally (no DATABASE_URL) a fixed dev password is fine; once deployed,
-# ADMIN_PASSWORD has to be set or the admin side stays shut.
+def _local_password():
+    """The password for local use, kept OUT of this repo.
+
+    Generated on first run and stored under data/, which is git-ignored in
+    full. That way the published source contains no working password at all --
+    not even a local one. Edit that file to choose your own.
+    """
+    path = core.DATA_DIR / "admin_password.txt"
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    except OSError:
+        pass                                  # no file yet, or unreadable
+    generated = secrets.token_urlsafe(9)
+    core.DATA_DIR.mkdir(exist_ok=True)
+    path.write_text(generated + "\n", encoding="utf-8")
+    print(f"\n  Organiser password: {generated}")
+    print(f"  Saved in {path}")
+    print("  Edit that file to pick your own.\n")
+    return generated
+
+
+# The repo is public, so it must contain no usable password anywhere. Deployed,
+# ADMIN_PASSWORD has to be set or the admin side stays shut; locally, the
+# password lives in a git-ignored file rather than in this source.
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or ""
 if not ADMIN_PASSWORD:
     if os.environ.get("DATABASE_URL"):
@@ -33,7 +56,7 @@ if not ADMIN_PASSWORD:
         print("ADMIN_PASSWORD is not set — admin access is disabled. "
               "Set it in the host's environment settings.")
     else:
-        ADMIN_PASSWORD = "lunch"                     # local development only
+        ADMIN_PASSWORD = _local_password()
 
 
 @app.errorhandler(Exception)
