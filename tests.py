@@ -381,6 +381,22 @@ def test_web(srv, D):
           len(re.findall(r">Lunch<", html)) == 1,
           f"{len(re.findall(r'>Lunch<', html))} occurrences")
 
+    section("THE PAGE REMEMBERS NOBODY BETWEEN VISITS")
+    _, js = srv.get("/static/order.js")
+    # A link the whole office opens, on shared phones and laptops: a saved name
+    # would greet the next person as the last one.
+    check("nothing is stored in the browser", "localStorage" not in js)
+    for gone in ("myName", "myVenmo", "rememberName", "orderedToday"):
+        check(f"'{gone}' is gone", gone not in js)
+    check("your order follows the typed name", "typedName()" in js)
+    check("repeat items still skip the prompt in one sitting",
+          "orderedHere" in js)
+    _, html = srv.get("/")
+    check("name box has no prefilled value",
+          not re.search(r'id="pName"[^>]*value=', html))
+    check("venmo box has no prefilled value",
+          not re.search(r'id="pVenmo"[^>]*value=', html))
+
     section("THE VENMO NOTE NAMES THE ORGANISER")
     _, js = srv.get("/static/order.js")
     check("says a returning payer can leave it blank",

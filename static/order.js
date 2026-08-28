@@ -13,26 +13,19 @@ let state = null;
 let method = "cash";
 const date = new Date().toLocaleDateString("en-CA");
 
-function myName() {
-  try { return localStorage.getItem("lunchName") || ""; } catch { return ""; }
-}
-function rememberName(name) {
-  try { localStorage.setItem("lunchName", name); } catch { /* private mode */ }
-}
-function myVenmo() {
-  try { return localStorage.getItem("lunchVenmo") || ""; } catch { return ""; }
-}
-// The date this browser last ordered under the remembered name. Lets someone
-// add a second item without being asked "is that you?" every time, while a
-// genuinely different person on a different device still gets asked.
-function orderedToday(name) {
-  try {
-    return localStorage.getItem("lunchOrderedOn") === date
-        && myName().trim().toLowerCase() === name.trim().toLowerCase();
-  } catch { return false; }
-}
-function rememberOrdered() {
-  try { localStorage.setItem("lunchOrderedOn", date); } catch { /* private mode */ }
+/* Nothing about a person is stored between visits. This link goes to the whole
+   office and gets opened on shared phones and laptops, so a remembered name
+   would greet the next person as the last one. Both boxes start empty on every
+   load; what you type is all the page knows.
+
+   Names ordered under during THIS page view. Lets you add a second item
+   without being asked "is that you?" again, while surviving nothing: after a
+   refresh the page genuinely cannot tell you from another person of the same
+   name, so it asks -- which is the right answer, not a regression. */
+const orderedHere = new Set();
+
+function typedName() {
+  return $("pName").value.trim();
 }
 
 let toastTimer;
@@ -131,8 +124,10 @@ function render() {
 }
 
 function renderMine() {
-  const name = myName().trim().toLowerCase();
-  const me = state.orders.find((o) => o.name.trim().toLowerCase() === name);
+  // Driven by what is in the name box, so your order appears as you type it
+  // and disappears when you clear it. Nothing is remembered between visits.
+  const name = typedName().toLowerCase();
+  const me = name && state.orders.find((o) => o.name.trim().toLowerCase() === name);
   const box = $("mine");
 
   if (!me || !me.items.length) {
@@ -375,15 +370,13 @@ async function submitOrder(confirm) {
   if (!name || !item) return;
 
   const body = { name, item, method, venmo_user: $("pVenmo").value };
-  // Same name, same device, already ordered today -- that is the same person
-  // adding a second item, so don't make them confirm it every time.
-  if (confirm || orderedToday(name)) body.confirm = "add";
+  // Already ordered under this name in this sitting, so it is the same person
+  // adding a second item -- don't make them confirm it again.
+  if (confirm || orderedHere.has(name.toLowerCase())) body.confirm = "add";
 
   try {
     state = await api("/api/public/order", body);
-    rememberName(name);
-    rememberOrdered();
-    try { localStorage.setItem("lunchVenmo", $("pVenmo").value.trim()); } catch { /* ignore */ }
+    orderedHere.add(name.toLowerCase());
     $("pItem").value = "";
     hideSamePrompt();
     $("nameHint").classList.add("hidden");
@@ -409,10 +402,12 @@ $("pubTabs").onclick = (event) => {
   }
 };
 
+// "Your order" tracks the name box as it is typed, rather than waiting for the
+// next poll to notice.
+$("pName").addEventListener("input", () => { if (state) renderMine(); });
+
 wireLightbox();
-$("pName").value = myName();
-$("pVenmo").value = myVenmo();
 load().then(() => {
-  if (!myName()) $("pName").focus(); else $("pItem").focus();
+  $("pName").focus();          // always empty now, so that is where you start
   pollWhenVisible();
 }).catch((err) => toast(err.message, true));
