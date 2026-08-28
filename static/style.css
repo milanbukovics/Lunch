@@ -398,10 +398,12 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .menuStrip { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .menuThumb {
   padding: 0; border: 1.5px solid var(--line); border-radius: 10px;
-  background: var(--surface); cursor: zoom-in; overflow: hidden;
-  width: 92px; height: 92px; flex: none;
+  background: var(--bg); cursor: zoom-in; overflow: hidden;
+  width: 92px; height: 112px; flex: none;   /* portrait: menus are taller than wide */
 }
-.menuThumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* contain, not cover: a menu has to be recognisable as a whole sheet. cover
+   would fill the tile by trimming the top and bottom off a portrait photo. */
+.menuThumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .menuThumb:hover { border-color: var(--accent); }
 .menuPdf {
   display: inline-block; padding: 10px 14px; border-radius: 10px;
@@ -440,6 +442,11 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .lightbox {
   position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.9);
   display: flex; flex-direction: column;
+  /* inset:0 sizes to the LAYOUT viewport, which on a phone stays full height
+     underneath the URL bar -- so the bottom of a fitted image hides behind the
+     browser chrome. dvh tracks what is actually visible; vh is the fallback. */
+  height: 100vh;
+  height: 100dvh;
 }
 .lbBar {
   display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -453,7 +460,16 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .lbBar button:hover { background: rgba(255,255,255,.3); }
 #lbPct { min-width: 62px; text-align: center; font-variant-numeric: tabular-nums; }
 .lbStage {
-  flex: 1; overflow: hidden; display: grid; place-items: center;
+  /* min-height:0 is load-bearing. A flex item's min-height defaults to auto,
+     which resolves to the image's intrinsic height -- a floor flex:1 cannot
+     shrink past. The stage then grows taller than the screen, max-height:100%
+     on the image measures against THAT, and the bottom is cut off. The taller
+     the photo, the worse it looks. */
+  flex: 1; min-height: 0;
+  /* Flex rather than grid to centre it: max-height:100% on the image resolves
+     against a flex container's definite height, where an auto-sized grid row
+     would be measuring itself against its own content. */
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
   touch-action: none;      /* we handle pinch/drag; don't let the page scroll */
 }
 .lbStage.grabbable { cursor: grab; }

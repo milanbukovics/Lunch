@@ -591,8 +591,18 @@ def test_menu_files(srv, D):
     check("a blank Place explains itself", "needsPlace" in adminjs)
     check("drag and drop wired up", "dataTransfer" in adminjs)
 
-    section("THE PRICE BOX STILL CLEARS THE $")
+    section("THE WHOLE IMAGE IS VISIBLE")
     _, css = srv.get("/static/style.css")
+    # Can't assert pixels from here, but these three are what stop the crop,
+    # and each is a one-word edit away from silently coming back.
+    check("stage can shrink below the image's intrinsic height",
+          "min-height: 0" in css)
+    check("lightbox tracks the visible viewport on phones", "100dvh" in css)
+    check("thumbnails letterbox rather than trim",
+          "object-fit: contain" in css and
+          "object-fit: cover" not in css.split(".lightbox")[0])
+
+    section("THE PRICE BOX STILL CLEARS THE $")
     check("padding rule is specific enough to survive the shorthand",
           "input.editPrice" in css)
 
