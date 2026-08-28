@@ -1,4 +1,4 @@
-﻿"""Where days and menus live.
+"""Where days and menus live.
 
 Two backends, chosen by environment:
 

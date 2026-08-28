@@ -623,6 +623,40 @@ def test_menu_files(srv, D):
           "input.editPrice" in css)
 
 
+def test_encoding():
+    """Text that was UTF-8, got read as Windows-1252, and saved back that way.
+
+    An em dash becomes 'a-euro-quote' and reaches the browser looking like
+    line noise. Nothing crashes, so it only surfaces when somebody reads the
+    page -- which is exactly why it is worth a test.
+    """
+    section("FILES ARE CLEAN UTF-8")
+    suffixes = {".py", ".html", ".js", ".css", ".md", ".bat", ".yaml", ".yml"}
+    skip = {".git", "__pycache__", "data", "web"}
+    bad_text, bad_bom = [], []
+
+    for path in sorted(HERE.rglob("*")):
+        if not path.is_file() or any(p in skip for p in path.parts):
+            continue
+        if path.suffix not in suffixes:
+            continue
+        raw = path.read_bytes()
+        if raw[:3] == b"\xef\xbb\xbf":
+            bad_bom.append(path.name)
+        text = raw.decode("utf-8", "replace")
+        # Escapes, not literal glyphs, so this file does not flag
+        # itself: U+00E2 then U+20AC is a UTF-8 lead byte seen
+        # through cp1252.
+        markers = ("\u00e2\u20ac", "\u00c3\u00a9", "\u00c2\u00a0")
+        if any(m in text for m in markers):
+            bad_text.append(path.name)
+
+    check("no mojibake anywhere", not bad_text, str(bad_text))
+    # A BOM before <!doctype> can drop old browsers out of standards mode, and
+    # in a .bat file it breaks the first command outright.
+    check("no byte-order marks", not bad_bom, str(bad_bom))
+
+
 def test_menu_files_on_disk():
     """The same behaviour with no database, where files land under data/."""
     section("MENU FILES WITHOUT A DATABASE")
@@ -674,6 +708,7 @@ def main():
         test_audited_day()
         test_grouping_and_learning()
         test_storage_parity()
+        test_encoding()
         srv = Server()
         try:
             D = core.today_str()

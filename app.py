@@ -1,4 +1,4 @@
-﻿"""Lunch ordering site.
+"""Lunch ordering site.
 
 Two audiences:
   /       coworkers add their own order -- names and items only, no money
