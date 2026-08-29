@@ -179,6 +179,8 @@ function render() {
     { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   if ($("place") !== document.activeElement) $("place").value = state.place;
   for (const [id, value] of [["receiptTotal", state.receipt],
+                             ["receiptSubtotal", state.receipt_subtotal],
+                             ["receiptItems", state.receipt_items],
                              ["cashHanded", state.restaurant_paid]]) {
     if ($(id) !== document.activeElement) $(id).value = value;
   }
@@ -190,7 +192,9 @@ function render() {
                                 ? " on " + state.restaurant_method : "");
   }
   $("handedField").classList.toggle("hidden", byCard);
-  $("receiptLabel").textContent = byCard ? "Charged to card" : "Receipt total";
+  // Named for what left your pocket, not "receipt total" -- a receipt carries
+  // three different numbers and the subtotal field above wants a different one.
+  $("receiptLabel").textContent = byCard ? "Charged to card" : "Total you paid";
 
   $("lockBtn").textContent = state.locked ? "Reopen orders" : "Close orders";
   $("lockBtn").classList.toggle("locked", state.locked);
@@ -493,31 +497,159 @@ function renderPrices() {
 
   const done = state.priced_groups, all = state.total_groups;
   $("priceBadge").textContent = done < all ? String(all - done) : "";
+  renderMergeOffers();
   checkReceipt();
+  checkCount();
 }
 
+/* Lines that look like one dish written several ways.
+
+   Six rice plates written four ways showed as 2, 2, 1 and 1, so the count
+   never reached six and the receipt's five could not be contradicted. Merging
+   makes it one line of six. Every wording and its count is listed, because the
+   organiser is the one confirming these really are the same dish -- the server
+   only suggests, and it rewrites descriptions, never prices. */
+function renderMergeOffers() {
+  const offers = state.merge_suggestions || [];
+  $("mergeOffers").replaceChildren(...offers.map((offer) => {
+    const box = el("div", "mergeOffer");
+    box.append(el("b", null,
+      `${offer.variants.length} lines look like the same dish (${offer.total} total)`));
+
+    const list = el("ul", "mergeList");
+    for (const v of offer.variants) {
+      list.append(el("li", null, `${v.count}×  ${v.desc}`));
+    }
+    box.append(list);
+
+    const go = el("button", "primary", `Merge into "${offer.into}"`);
+    go.type = "button";
+    go.onclick = () => send("/api/merge-items",
+      { into: offer.into, from: offer.variants.map((v) => v.desc) },
+      `Merged into one line of ${offer.total}`);
+    box.append(go);
+    return box;
+  }));
+}
+
+/* Does the order match the receipt?
+
+   This used to compare the typed total against bill_cents -- items plus 4.712%
+   GET -- but a receipt total is whatever the restaurant charged. Doner Shack
+   prices include tax and add 3% for the card, so the two could never agree:
+   on 28 Aug it read "off by $23.50" on a day a flawless order would still have
+   read "off by $3.87". Permanently red means ignored, and a missing plate went
+   through. So compare like with like instead -- untaxed items against the
+   receipt's own subtotal, and a plain count of things -- which reads zero when
+   the order is actually right. The old estimate is still shown when no
+   subtotal has been typed, so older days behave as before. */
 function checkReceipt() {
   const verdict = $("receiptVerdict");
-  const raw = $("receiptTotal").value.trim();
   const t = state.totals;
+  const raw = $("receiptTotal").value.trim();
+  const typed = raw ? Math.round(parseFloat(raw.replace(/[$,]/g, "")) * 100) : null;
 
-  if (!raw) { verdict.className = "verdict"; verdict.textContent = ""; return; }
-  const typed = Math.round(parseFloat(raw.replace(/[$,]/g, "")) * 100);
-  if (Number.isNaN(typed)) {
+  if (raw && Number.isNaN(typed)) {
     verdict.className = "verdict r"; verdict.textContent = "not a number";
     return;
   }
+
   const parts = [];
-  const diff = typed - t.bill_cents;
-  if (diff === 0) parts.push(`✓ matches my total of $${t.bill}`);
-  else parts.push(`off by $${(Math.abs(diff) / 100).toFixed(2)} from my $${t.bill}`);
+  let bad = false;
+
+  if (t.subtotal_diff_cents !== null && t.subtotal_diff_cents !== undefined) {
+    if (t.subtotal_diff_cents === 0) parts.push("✓ items match the receipt");
+    else parts.push(`$${t.subtotal_diff} ${t.subtotal_diff_cents > 0 ? "over" : "under"}`);
+    bad = bad || t.subtotal_diff_cents !== 0;
+  }
+  if (t.count_diff !== null && t.count_diff !== undefined) {
+    if (t.count_diff === 0) parts.push(`${t.keyed_items} items`);
+    else parts.push(`${t.keyed_items} keyed, ${t.receipt_items_count} on the receipt`);
+    bad = bad || t.count_diff !== 0;
+  }
+  if (t.surcharge_pct !== null && t.surcharge_pct !== undefined) {
+    parts.push(`${t.surcharge_pct}% surcharge`);
+  }
+
+  // Nothing to compare against yet -- fall back to the old estimate.
+  if (!parts.length) {
+    if (!raw) { verdict.className = "verdict"; verdict.textContent = ""; return; }
+    const diff = typed - t.bill_cents;
+    bad = diff !== 0;
+    parts.push(diff === 0 ? `✓ matches my total of $${t.bill}`
+                          : `off by $${(Math.abs(diff) / 100).toFixed(2)} from my $${t.bill}`
+                            + " — type the receipt subtotal for a real check");
+  }
   if (t.restaurant_change) parts.push(`they gave you $${t.restaurant_change} back`);
-  verdict.className = "verdict " + (diff === 0 ? "g" : "r");
+
+  verdict.className = "verdict " + (bad ? "r" : "g");
   verdict.textContent = parts.join(" · ");
+}
+
+/* The app knows what it thinks you are holding; only you can see the actual
+   notes. On 28 Aug the totals agreed at $244 but the split did not -- one $15
+   Venmo payment had been filed as cash -- and finding that took a manual
+   reconciliation. When the total is right and only the split is wrong, the
+   orders that could explain it are nameable, so name them. */
+function checkCount() {
+  const verdict = $("countVerdict");
+  const t = state.totals;
+  const cashRaw = $("countCash").value.trim();
+  const venmoRaw = $("countVenmo").value.trim();
+
+  if (!cashRaw && !venmoRaw) {
+    verdict.className = "verdict"; verdict.textContent = ""; return;
+  }
+  const cents = (text) => Math.round(parseFloat(text.replace(/[$,]/g, "")) * 100);
+  const cash = cashRaw ? cents(cashRaw) : null;
+  const venmo = venmoRaw ? cents(venmoRaw) : null;
+  if ((cashRaw && Number.isNaN(cash)) || (venmoRaw && Number.isNaN(venmo))) {
+    verdict.className = "verdict r"; verdict.textContent = "not a number";
+    return;
+  }
+  if (cash === null || venmo === null) {
+    verdict.className = "verdict"; verdict.textContent = "enter both to check";
+    return;
+  }
+
+  const money = (c) => `$${(Math.abs(c) / 100).toFixed(2)}`;
+  const expectCash = Math.round(parseFloat(t.cash_on_hand.replace(/,/g, "")) * 100);
+  const expectVenmo = Math.round(parseFloat(t.venmo_held.replace(/,/g, "")) * 100);
+  const cashGap = cash - expectCash;
+  const totalGap = (cash + venmo) - (expectCash + expectVenmo);
+
+  if (totalGap === 0 && cashGap === 0) {
+    verdict.className = "verdict g";
+    verdict.textContent = `✓ cash and Venmo both match`;
+    return;
+  }
+  if (totalGap === 0) {
+    // Same money, wrong pot. Whose payment is exactly the size of the gap?
+    const size = Math.abs(cashGap);
+    const wrongWay = cashGap < 0 ? "cash" : "Venmo";
+    const rightWay = cashGap < 0 ? "Venmo" : "cash";
+    const suspects = (state.people || [])
+      .filter((p) => p.method === wrongWay.toLowerCase() && p.paid
+                     && Math.round(parseFloat(p.paid.replace(/,/g, "")) * 100) === size)
+      .map((p) => p.name);
+    verdict.className = "verdict r";
+    verdict.textContent =
+      `Total is right. ${money(cashGap)} is filed as ${wrongWay} but you're holding `
+      + `it in ${rightWay}.`
+      + (suspects.length ? `  Paid exactly ${money(cashGap)} ${wrongWay}: `
+                           + `${suspects.join(", ")} — switch whoever sent it.` : "");
+    return;
+  }
+  verdict.className = "verdict r";
+  verdict.textContent =
+    `${money(totalGap)} ${totalGap < 0 ? "short" : "over"} overall — `
+    + `expected cash $${t.cash_on_hand} and Venmo $${t.venmo_held}.`;
 }
 
 function saveReceipt() {
   send("/api/receipt", { receipt: $("receiptTotal").value,
+                         receipt_subtotal: $("receiptSubtotal").value,
+                         receipt_items: $("receiptItems").value,
                          restaurant_paid: $("cashHanded").value }, "Receipt saved");
 }
 
@@ -705,7 +837,7 @@ $("orderForm").onsubmit = async (event) => {
   }
 };
 
-for (const id of ["receiptTotal", "cashHanded"]) {
+for (const id of ["receiptTotal", "receiptSubtotal", "receiptItems", "cashHanded"]) {
   $(id).onchange = saveReceipt;
   $(id).onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } };
 }
@@ -753,6 +885,8 @@ $("nextDay").onclick = () => shift(1);
 $("todayBtn").onclick = () => goto(new Date().toLocaleDateString("en-CA"));
 $("pickDay").onclick = (e) => { e.stopPropagation(); openCalendar(); };
 $("receiptTotal").oninput = checkReceipt;
+$("countCash").oninput = checkCount;
+$("countVenmo").oninput = checkCount;
 
 $("copyBtn").onclick = async () => {
   const text = callText();

@@ -317,6 +317,21 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
   margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line);
   display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;
 }
+/* The merge offer. Amber rather than red: nothing is wrong yet, but the count
+   will not line up against the receipt until these become one line. */
+.mergeOffer {
+  margin-bottom: 16px; padding: 14px 16px;
+  border: 1px solid var(--line); border-left: 4px solid var(--amber);
+  border-radius: var(--radius); background: var(--surface);
+}
+.mergeOffer b { display: block; margin-bottom: 8px; }
+.mergeList { margin: 0 0 12px; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+.mergeList li { margin: 3px 0; }
+
+/* The block is a wrapping flex row of fields, so a heading has to claim a
+   whole line of its own rather than sitting in beside the first input. */
+.receiptCheck .groupHead { width: 100%; margin: 0; }
+
 .verdict { font-weight: 650; padding-bottom: 11px; }
 .verdict.g { color: var(--green); }
 .verdict.r { color: var(--red); }
@@ -488,6 +503,22 @@ body.noScroll { overflow: hidden; }
 .samePrompt p { margin: 0 0 12px; }
 .sameBtns { display: flex; flex-wrap: wrap; gap: 10px; }
 .sameBtns button { padding: 10px 14px; }
+
+/* What others ordered today. Deliberately understated -- an earlier dropdown
+   here read as a menu people thought they had to pick from, so these sit
+   below the free-text box, carry a count each, and never appear when nobody
+   has ordered yet. */
+.alsoBox { margin-top: 10px; }
+.alsoStrip { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
+.alsoChip {
+  display: inline-flex; align-items: baseline; gap: 6px; cursor: pointer;
+  font: inherit; font-size: 13px; text-align: left;
+  padding: 6px 11px; border-radius: 20px;
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+}
+.alsoChip:hover { border-color: var(--accent); color: var(--accent); }
+.alsoChip i { font-style: normal; font-weight: 700; color: var(--muted); }
+.alsoChip:hover i { color: var(--accent); }
 
 .pubMain { max-width: 620px; margin: 0 auto; padding: 22px 20px 60px; }
 .pubMain .f { margin-bottom: 15px; }

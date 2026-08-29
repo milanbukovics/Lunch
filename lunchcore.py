@@ -77,6 +77,110 @@ def inherited_restaurant_method(day_date):
     return "cash"
 
 
+# --- matching the same dish written two ways --------------------------------
+# On 28 Aug six people ordered a rice plate with lamb and wrote it four
+# different ways, so group_items() -- which keys on the exact text -- made four
+# lines of 2, 2, 1 and 1. The number six appeared nowhere, and the receipt's
+# "5 Rice Lamb" had nothing to contradict. These two functions spot the near
+# misses. They only ever *suggest*: the ordering page asks the person and the
+# pricing screen asks the organiser, so a wrong guess costs one tap.
+
+# Words that carry no meaning for telling two dishes apart. "no" is absent on
+# purpose: "salad - no meat" should stay unlike "salad with meat".
+FILLER = frozenset("with w and the for a an of my please extra side plus".split())
+
+# Words that DO tell two dishes apart, in two groups. Naming a different
+# protein blocks a match, and so does naming a different form -- Karen's pita
+# plate and Patricia's rice plate are 67% the same words but different dishes
+# at different prices ($15.75 and $15.00), and merging them would have applied
+# one price to both. "plate" is deliberately not a form: it appears in nearly
+# every dish here and would let anything match anything.
+PROTEIN = frozenset(
+    "chicken lamb beef veggie veggies vegetarian falafel shrimp pork tofu".split())
+FORM = frozenset("rice pita wrap sandwich salad bowl gyro".split())
+MARK_GROUPS = (PROTEIN, FORM)
+
+# How alike the remaining wording has to be. Tuned on the real 28 Aug orders:
+# high enough that a pita plate and a rice plate stay apart on their own words,
+# low enough that "Rice plate with Lamb" reaches "doner rice plate with lamb".
+SIMILAR_ENOUGH = 0.6
+
+_SEPARATORS = str.maketrans("/&+-,()", "       ")
+
+
+def item_tokens(desc):
+    """'Doner Rice Plate w/Lamb & Beef' -> {doner, rice, plate, lamb, beef}."""
+    words = desc.casefold().translate(_SEPARATORS).split()
+    return {w for w in words if w not in FILLER}
+
+
+def _conflicts(left, right):
+    """True when the two name different proteins, or different forms.
+
+    Only compares a group when BOTH sides mention it. One order saying "lamb"
+    and another saying nothing about protein is not a disagreement -- it is
+    just a shorter description.
+    """
+    for group in MARK_GROUPS:
+        here, there = left & group, right & group
+        if here and there and not (here & there):
+            return True
+    return False
+
+
+def same_dish(left, right):
+    """Do these two descriptions look like the same thing?
+
+    The conflict check comes first and is the safety rule: chicken never
+    matches lamb, and a wrap never matches a rice plate, however alike the
+    rest of the words are. Only then does overall wording decide.
+    """
+    if left.casefold() == right.casefold():
+        return True
+    here, there = item_tokens(left), item_tokens(right)
+    if not here or not there or _conflicts(here, there):
+        return False
+    return len(here & there) / len(here | there) >= SIMILAR_ENOUGH
+
+
+def similar_items(desc, existing):
+    """Descriptions in `existing` that look like `desc`, closest first.
+
+    An exact match is not a near miss, so it never comes back: there is
+    nothing to ask about when the wording already agrees.
+    """
+    key = desc.casefold()
+    mine = item_tokens(desc)
+    hits = []
+    for other in existing:
+        if other.casefold() == key or not same_dish(desc, other):
+            continue
+        theirs = item_tokens(other)
+        both = mine | theirs
+        hits.append((len(mine & theirs) / len(both) if both else 0, other))
+    hits.sort(key=lambda pair: (-pair[0], pair[1].casefold()))
+    return [other for _, other in hits]
+
+
+def cluster_items(descs):
+    """Group descriptions that look like one dish. Longest wording first.
+
+    Single linkage: a description joins a cluster if it matches ANY member,
+    not all of them. That matters -- "Rice plate with Lamb" is too short to
+    reach "Doner Rice Plate w/Lamb & Beef for the meats" directly, but both
+    reach "doner rice plate with lamb", so all three belong together.
+    """
+    clusters = []
+    for desc in sorted(set(descs), key=lambda d: (-len(d), d.casefold())):
+        for cluster in clusters:
+            if any(same_dish(desc, member) for member in cluster):
+                cluster.append(desc)
+                break
+        else:
+            clusters.append([desc])
+    return clusters
+
+
 def group_items(day):
     """One entry per distinct item across everyone, for the call list and the
     receipt-pricing screen. Prices are typed once per item, not once per person."""
@@ -141,6 +245,27 @@ def totals(day):
                 cash_change += change
 
     bill = taxed_cents(items_cents)
+
+    # Checking the order against the receipt. `bill` cannot do this job: it is
+    # items plus 4.712% GET, while the receipt total is whatever the restaurant
+    # charged -- at Doner Shack, tax-inclusive prices plus a 3% card surcharge.
+    # Those two never agree, so on 28 Aug the check read "off by $23.50" on a
+    # day it would also have read "off by $3.87" with a flawless order, and got
+    # ignored. These compare like with like instead: untaxed items against the
+    # receipt's own subtotal line, and a plain count of things. Both read zero
+    # when the order is right, which is the state the old check could not reach.
+    keyed_items = sum(len(o["items"]) for o in day["orders"])
+    receipt_subtotal = day.get("receipt_subtotal_cents")
+    receipt_items = day.get("receipt_items")
+    subtotal_diff = None if receipt_subtotal is None else items_cents - receipt_subtotal
+    count_diff = None if receipt_items is None else keyed_items - receipt_items
+    # What the restaurant really added on top, so it stops being a guess.
+    surcharge_pct = None
+    if receipt_subtotal and day.get("receipt_cents") is not None:
+        surcharge_pct = round(
+            float(Decimal(day["receipt_cents"] - receipt_subtotal)
+                  / Decimal(receipt_subtotal) * 100), 1)
+
     cash_left = collected - change_out
     cash_on_hand = cash_in - cash_change
     venmo_held = venmo_in - venmo_change
@@ -158,6 +283,13 @@ def totals(day):
         "unpriced": unpriced,
         "items_cents": items_cents,
         "bill_cents": bill,
+        # --- does the order match the receipt? None until the receipt is typed
+        "keyed_items": keyed_items,
+        "subtotal_diff_cents": subtotal_diff,
+        "count_diff": count_diff,
+        "surcharge_pct": surcharge_pct,
+        "receipt_subtotal_cents": receipt_subtotal,
+        "receipt_items": receipt_items,
         "collected_cents": collected,
         "change_out_cents": change_out,
         "cash_left_cents": cash_left,
@@ -195,7 +327,8 @@ def today_str():
 def new_day(day_date=None):
     return {"date": day_date or today_str(), "place": "", "orders": [],
             "receipt_cents": None, "restaurant_paid_cents": None,
-            "restaurant_method": None, "locked": False, "organiser": ""}
+            "restaurant_method": None, "locked": False, "organiser": "",
+            "receipt_subtotal_cents": None, "receipt_items": None}
 
 
 def day_path(day_date):
@@ -230,6 +363,8 @@ def load_day(day_date):
     day.setdefault("restaurant_method", None)      # None = inherit / default cash
     day.setdefault("locked", False)                # True = public ordering closed
     day.setdefault("organiser", "")                # who picked up; "" = unrecorded
+    day.setdefault("receipt_subtotal_cents", None)  # receipt's own item total
+    day.setdefault("receipt_items", None)           # how many lines it billed
     return day
 
 

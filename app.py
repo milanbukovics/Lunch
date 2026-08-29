@@ -12,6 +12,7 @@ import hmac
 import os
 import secrets
 import threading
+from collections import Counter
 from functools import wraps
 
 from flask import (Flask, Response, jsonify, redirect, render_template, request,
@@ -148,10 +149,39 @@ def public_view(day):
                     "method": core.method_of(o),
                     "venmo_user": o.get("venmo_user", "")}
                    for o in day["orders"]],
-        # No menu suggestions here on purpose. The dropdown read as a menu you
-        # had to pick from, and it handed every anonymous visitor a list of
-        # every dish ever ordered anywhere. The admin box keeps its own.
+        # What people have already ordered TODAY, commonest first, so the next
+        # person can reuse the exact wording instead of inventing a fifth way
+        # to say "rice plate with lamb". Still no menu_suggestions() here: the
+        # old dropdown read as a menu you had to pick from and handed every
+        # anonymous visitor every dish ever ordered anywhere. This is only this
+        # day's orders -- already in "orders" above, so it exposes nothing new.
+        "ordered_today": ordered_today(day),
     }
+
+
+def merge_suggestions(day):
+    """Clusters of two or more wordings that look like the same dish.
+
+    The wording kept by default is the commonest one, tie-broken by length --
+    it is the one most people already recognise on the call list.
+    """
+    counts = Counter(i["desc"] for o in day["orders"] for i in o["items"])
+    out = []
+    for cluster in core.cluster_items(counts):
+        if len(cluster) < 2:
+            continue
+        variants = sorted(cluster, key=lambda d: (-counts[d], -len(d), d.casefold()))
+        out.append({"into": variants[0],
+                    "total": sum(counts[d] for d in variants),
+                    "variants": [{"desc": d, "count": counts[d]} for d in variants]})
+    return sorted(out, key=lambda c: -c["total"])
+
+
+def ordered_today(day):
+    """Today's item wordings with counts, commonest first, then alphabetical."""
+    counts = Counter(i["desc"] for o in day["orders"] for i in o["items"])
+    return [{"desc": desc, "count": n}
+            for desc, n in sorted(counts.items(), key=lambda p: (-p[1], p[0].casefold()))]
 
 
 def menu_suggestions(place):
@@ -223,7 +253,15 @@ def admin_view(day):
                     "mixed": g["mixed"],
                     "price": money(g["price_cents"]) if g["price_cents"] is not None else ""}
                    for g in groups],
+        # Lines that look like one dish written several ways, for the merge
+        # offer on the pricing screen. Suggestion only -- the organiser sees
+        # every wording and confirms before anything is rewritten.
+        "merge_suggestions": merge_suggestions(day),
         "receipt": money(day["receipt_cents"]) if day.get("receipt_cents") is not None else "",
+        "receipt_subtotal": (money(day["receipt_subtotal_cents"])
+                             if day.get("receipt_subtotal_cents") is not None else ""),
+        "receipt_items": ("" if day.get("receipt_items") is None
+                          else str(day["receipt_items"])),
         "restaurant_paid": (money(day["restaurant_paid_cents"])
                             if day.get("restaurant_paid_cents") is not None else ""),
         "restaurant_method": core.restaurant_method_of(day),
@@ -231,6 +269,13 @@ def admin_view(day):
             "people": t["people"], "unpaid": t["unpaid"], "unpriced": t["unpriced"],
             "items": money(t["items_cents"]),
             "bill": money(t["bill_cents"]), "bill_cents": t["bill_cents"],
+            "keyed_items": t["keyed_items"],
+            "receipt_items_count": t["receipt_items"],
+            "subtotal_diff_cents": t["subtotal_diff_cents"],
+            "subtotal_diff": (None if t["subtotal_diff_cents"] is None
+                              else money(abs(t["subtotal_diff_cents"]))),
+            "count_diff": t["count_diff"],
+            "surcharge_pct": t["surcharge_pct"],
             "collected": money(t["collected_cents"]),
             "change_out": money(t["change_out_cents"]),
             "cash_in": money(t["cash_in_cents"]),
@@ -456,6 +501,24 @@ def api_public_order():
             # about a dollar less than they owe. Ask instead of guessing.
             return jsonify({"error": "name_taken", "name": order["name"],
                             "items": [i["desc"] for i in order["items"]]}), 409
+
+        # The same dish typed two ways makes two lines, so the count never adds
+        # up against the receipt -- on 28 Aug six rice plates showed as 2, 2, 1
+        # and 1, and the missing plate went unseen. Offer the wording everyone
+        # else used. `item_ok` is kept separate from `confirm` above so
+        # answering the name question never silently answers this one too.
+        if not body.get("item_ok"):
+            existing = [i["desc"] for o in day["orders"] for i in o["items"]]
+            # Already worded exactly like somebody else's -- that is the thing
+            # we are trying to encourage, so never interrupt it, even when some
+            # third wording of the same dish is also on the list.
+            matched = any(d.casefold() == desc.casefold() for d in existing)
+            close = [] if matched else core.similar_items(desc, existing)
+            if close:
+                return jsonify({"error": "similar_item", "match": close[0],
+                                "count": sum(1 for d in existing
+                                             if d.casefold() == close[0].casefold())}), 409
+
         if order is None:
             order = {"name": name, "items": [], "paid_cents": None}
             day["orders"].append(order)
@@ -645,10 +708,42 @@ def act_receipt(day, body):
             raise ValueError(f"unknown restaurant payment method {value!r}")
         day["restaurant_method"] = value
     for field, key in (("receipt", "receipt_cents"),
-                       ("restaurant_paid", "restaurant_paid_cents")):
+                       ("restaurant_paid", "restaurant_paid_cents"),
+                       ("receipt_subtotal", "receipt_subtotal_cents")):
         if field in body:
             raw = (body.get(field) or "").strip()
             day[key] = core.parse_price(raw) if raw else None
+    # A count of things, not money -- parse_price would multiply it by 100.
+    if "receipt_items" in body:
+        raw = str(body.get("receipt_items") or "").strip()
+        if not raw:
+            day["receipt_items"] = None
+        elif raw.isdigit():
+            day["receipt_items"] = int(raw)
+        else:
+            raise ValueError(f"'{raw}' is not a number of items")
+
+
+def act_merge_items(day, body):
+    """Rewrite several wordings of one dish to a single agreed wording.
+
+    Only `desc` changes -- never a price. group_items() and set_price_for_desc()
+    keep keying on exact text exactly as before, so the money path is untouched;
+    all this does is make six rice plates show as one line of six instead of
+    four lines the receipt cannot be checked against. One-way: the original
+    wordings are not kept, which is why the organiser confirms first.
+    """
+    into = (body.get("into") or "").strip()
+    wordings = body.get("from")
+    if not into:
+        raise ValueError("Pick the wording to keep")
+    if not isinstance(wordings, list) or not wordings:
+        raise ValueError("Nothing to merge")
+    keys = {w.casefold() for w in wordings if isinstance(w, str)}
+    for order in day["orders"]:
+        for item in order["items"]:
+            if item["desc"].casefold() in keys:
+                item["desc"] = into
 
 
 def act_change_given(day, body):
@@ -710,7 +805,7 @@ ADMIN_ACTIONS = {
     "method": act_method, "venmo-user": act_venmo_user, "receipt": act_receipt,
     "change-given": act_change_given, "place": act_place, "lock": act_lock,
     "remove-item": act_remove_item, "edit-person": act_edit_person,
-    "delete-person": act_delete_person,
+    "delete-person": act_delete_person, "merge-items": act_merge_items,
 }
 
 

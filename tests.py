@@ -194,6 +194,105 @@ def test_grouping_and_learning():
           menus["Place"][0]["price_cents"] == 1200)
 
 
+# The real wordings from 28 Aug 2026. Six people ordered one dish and typed it
+# four ways, so it showed as four lines of 2, 2, 1 and 1; the count never
+# reached six and the receipt's "5 Rice Lamb" had nothing to contradict.
+LAMB_WORDINGS = [
+    "Doner Rice Plate w/Lamb & Beef for the meats",
+    "doner rice plate with lamb",
+    "Doner Rice Plate with lamb/beef",
+    "Rice plate with Lamb",
+]
+
+
+def test_same_dish():
+    section("SPOTTING ONE DISH WRITTEN SEVERAL WAYS")
+    clusters = core.cluster_items(LAMB_WORDINGS)
+    check("all four lamb wordings become one line", len(clusters) == 1,
+          str([len(c) for c in clusters]))
+
+    # The safety rule. Everything here was on the same receipt on the same day,
+    # and merging any of these pairs would apply one price to two dishes.
+    must_differ = [
+        ("Doner Rice Plate with chicken - veggies and yogurt garlic sauce",
+         "doner rice plate with lamb", "chicken is not lamb"),
+        ("Doner Pita Plate - chicken + Yogurt Garlic sauce",
+         "Doner Rice Plate with chicken - veggies and yogurt garlic sauce",
+         "a pita plate is not a rice plate ($15.75 vs $15.00)"),
+        ("Veggie wrap", "Doner Wrap with lamb and beef", "veggie is not lamb"),
+        ("Chicken schwarma sandwich", "Lamb/Beef Doner Sandwich",
+         "chicken sandwich is not a lamb one"),
+        ("Salad - no meat", "Veggie wrap", "a salad is not a wrap"),
+        ("Doner Wrap with lamb and beef", "doner rice plate with lamb",
+         "a wrap is not a rice plate"),
+    ]
+    for left, right, why in must_differ:
+        check(f"kept apart: {why}", not core.same_dish(left, right))
+
+    check("a short wording still reaches its family",
+          core.same_dish("Rice plate with Lamb", "doner rice plate with lamb"))
+    check("identical text always matches",
+          core.same_dish("Veggie wrap", "veggie WRAP"))
+    check("an exact match is never offered as a near miss",
+          core.similar_items("Veggie wrap", ["veggie WRAP"]) == [])
+    check("no recognised protein or form means no guessing",
+          not core.same_dish("Special of the day", "Special number two"))
+
+
+def test_merge_keeps_money():
+    section("MERGING WORDINGS NEVER MOVES MONEY")
+    day = _day([])
+    for i, desc in enumerate(LAMB_WORDINGS):
+        day["orders"].append({"name": f"P{i}", "paid_cents": None, "method": "cash",
+                              "items": [{"desc": desc, "price_cents": 1500}]})
+    before = core.totals(day)
+    check("starts as four separate lines", len(core.group_items(day)) == 4)
+
+    keys = {d.casefold() for d in LAMB_WORDINGS}
+    for order in day["orders"]:
+        for item in order["items"]:
+            if item["desc"].casefold() in keys:
+                item["desc"] = LAMB_WORDINGS[0]
+
+    groups = core.group_items(day)
+    check("becomes one line", len(groups) == 1, str(len(groups)))
+    check("carrying the full count", groups[0]["count"] == 4)
+    after = core.totals(day)
+    check("every total identical", all(before[k] == after[k] for k in before),
+          str([k for k in before if before[k] != after[k]]))
+
+
+def test_receipt_check():
+    section("CHECKING THE ORDER AGAINST THE RECEIPT")
+    day = _day([_order("A", 1500), _order("B", 1500), _order("C", 1500)])
+
+    t = core.totals(day)
+    check("no receipt subtotal means no comparison, not a false alarm",
+          t["subtotal_diff_cents"] is None and t["count_diff"] is None)
+    check("counts what was keyed in", t["keyed_items"] == 3, str(t["keyed_items"]))
+
+    # The 28 Aug shape: one more item keyed than the restaurant ever billed.
+    day["receipt_subtotal_cents"] = 3000
+    day["receipt_items"] = 2
+    day["receipt_cents"] = 3090
+    t = core.totals(day)
+    check("prices the item that was never billed", t["subtotal_diff_cents"] == 1500,
+          money(t["subtotal_diff_cents"]))
+    check("counts it too", t["count_diff"] == 1, str(t["count_diff"]))
+    check("reports the real surcharge, not the assumed tax",
+          t["surcharge_pct"] == 3.0, str(t["surcharge_pct"]))
+
+    # The state the old check could never reach on a real receipt.
+    day["receipt_subtotal_cents"] = 4500
+    day["receipt_items"] = 3
+    t = core.totals(day)
+    check("a clean order reads exactly zero",
+          t["subtotal_diff_cents"] == 0 and t["count_diff"] == 0,
+          f"{t['subtotal_diff_cents']} / {t['count_diff']}")
+
+    check("the old estimate is untouched", t["bill_cents"] == core.taxed_cents(4500))
+
+
 def test_storage_parity():
     section("FILE AND DATABASE AGREE")
     day = _day([_order("A", 1650, 2000), _order("B", 1000, None, "venmo")])
@@ -503,6 +602,106 @@ def test_same_name(srv, D):
           f"HTTP {code}")
 
 
+def test_wording_prompt(srv, D):
+    """The ordering page over HTTP: does it steer people onto one wording?"""
+    section("THE ORDERING PAGE STEERS ONTO ONE WORDING")
+    day = core.shift_date(D, -12)
+    op = srv.user()
+    srv.login(op, "Milan")
+    srv.post("/api/place", op=op, date=day, place="Doner Shack")
+
+    code, payload = srv.post("/api/public/order", date=day, name="Seth",
+                             item="doner rice plate with lamb", method="cash")
+    check("first order goes straight through", code == 200, f"HTTP {code}")
+    check("and appears on the strip",
+          [e["desc"] for e in payload["ordered_today"]] == ["doner rice plate with lamb"])
+
+    code, payload = srv.post("/api/public/order", date=day, name="Ron",
+                             item="Rice plate with Lamb", method="cash")
+    check("a reworded same dish is questioned", code == 409, f"HTTP {code}")
+    check("  ...offering the wording others used",
+          payload.get("match") == "doner rice plate with lamb", str(payload)[:120])
+
+    code, _ = srv.post("/api/public/order", date=day, name="Ron",
+                       item="Rice plate with Lamb", method="cash", item_ok=True)
+    check("item_ok gets past it", code == 200, f"HTTP {code}")
+
+    code, _ = srv.post("/api/public/order", date=day, name="Pat",
+                       item="Doner Rice Plate with chicken", method="cash")
+    check("a CHICKEN plate is never offered a LAMB match", code == 200, f"HTTP {code}")
+
+    code, _ = srv.post("/api/public/order", date=day, name="Deb",
+                       item="doner rice plate with lamb", method="cash")
+    check("wording that already matches is never questioned", code == 200, f"HTTP {code}")
+
+    # The two questions are independent: answering the name one must not
+    # silently answer this one.
+    code, _ = srv.post("/api/public/order", date=day, name="Seth",
+                       item="Doner rice plate w/ lamb", method="cash", confirm="add")
+    check("confirm='add' alone does not skip the wording check", code == 409,
+          f"HTTP {code}")
+
+    section("MERGING OVER HTTP")
+    _, raw = srv.get(f"/api/day?date={day}", op=op)
+    state = json.loads(raw)
+    offers = state["merge_suggestions"]
+    check("a merge is offered", len(offers) == 1, str([o["into"] for o in offers]))
+    check("  ...and never includes the chicken plate",
+          all("chicken" not in v["desc"].lower() for v in offers[0]["variants"]))
+
+    # Price everything first, so "money untouched" is an assertion about real
+    # dollars rather than a comparison of two zeroes.
+    for group in state["groups"]:
+        srv.post("/api/price", op=op, date=day, desc=group["desc"], price="15")
+    _, raw = srv.get(f"/api/day?date={day}", op=op)
+    before = json.loads(raw)["totals"]["items"]
+    check("  ...with real money on the day", before != "0.00", before)
+
+    code, payload = srv.post("/api/merge-items", op=op, date=day, into=offers[0]["into"],
+                             **{"from": [v["desc"] for v in offers[0]["variants"]]})
+    check("merge succeeds", code == 200, f"HTTP {code}")
+    check("  ...money untouched", payload["totals"]["items"] == before,
+          f"{before} -> {payload['totals']['items']}")
+    check("  ...and the offer is gone", not payload["merge_suggestions"])
+
+    code, _ = srv.post("/api/receipt", op=op, date=day, receipt_items="not-a-number")
+    check("a junk item count is refused", code == 400, f"HTTP {code}")
+
+
+def test_markup_ids():
+    """Every id the scripts look up must exist in the markup.
+
+    A mistyped id is silent in the browser -- $("thing") is just null and the
+    feature quietly does nothing -- so catch it here instead.
+    """
+    section("SCRIPTS AND MARKUP AGREE")
+    for js, html in (("static/order.js", "templates/order.html"),
+                     ("static/admin.js", "templates/admin.html")):
+        wanted = set(re.findall(r'\$\("([A-Za-z0-9_]+)"\)',
+                                (HERE / js).read_text(encoding="utf-8")))
+        present = set(re.findall(r'id="([A-Za-z0-9_]+)"',
+                                 (HERE / html).read_text(encoding="utf-8")))
+        missing = sorted(wanted - present)
+        check(f"{js} looks up nothing that isn't there", not missing, str(missing))
+
+
+def test_no_drift():
+    """The real day files must produce byte-identical numbers to before."""
+    section("REAL DAYS ARE UNAFFECTED")
+    days = sorted((HERE / "data").glob("lunch_*.json"))
+    if not days:
+        check("no data/ to compare against (fine on a clean checkout)", True)
+        return
+    for path in days:
+        day = json.loads(path.read_text(encoding="utf-8"))
+        for key, default in (("receipt_subtotal_cents", None), ("receipt_items", None)):
+            day.setdefault(key, default)
+        t = core.totals(day)
+        check(f"{path.stem[6:]} still reconciles",
+              t["subtotal_diff_cents"] is None and t["count_diff"] is None
+              and t["keyed_items"] == sum(len(o["items"]) for o in day["orders"]))
+
+
 def test_login_claims_day(srv, D):
     """Milan already claimed today by logging in during test_web."""
     section("A LATER ORGANISER CANNOT TAKE THE DAY OVER")
@@ -707,6 +906,11 @@ def main():
         test_totals()
         test_audited_day()
         test_grouping_and_learning()
+        test_same_dish()
+        test_merge_keeps_money()
+        test_receipt_check()
+        test_markup_ids()
+        test_no_drift()
         test_storage_parity()
         test_encoding()
         srv = Server()
@@ -715,6 +919,7 @@ def main():
             test_web(srv, D)
             test_same_name(srv, D)
             test_menu_files(srv, D)
+            test_wording_prompt(srv, D)
             test_concurrency(srv, D)
             test_login_claims_day(srv, D)   # last: it claims today
         finally:

@@ -119,8 +119,35 @@ function render() {
   $("allCount").textContent = count ? String(count) : "";
 
   renderMenu();
+  renderAlsoOrdered();
   renderMine();
   renderEveryone();
+}
+
+/* What everyone else already picked, so the same dish gets typed the same way.
+   On 28 Aug six people ordered a rice plate with lamb and wrote it four
+   different ways, so it showed as four lines and nobody could tell the receipt
+   had only billed five plates. The counts are the point: they make this read
+   as what your coworkers chose, not as a menu you have to order from. Built
+   with el() -- coworkers type these strings, so they go in as text, never
+   markup. Today only; nothing from previous days appears here. */
+function renderAlsoOrdered() {
+  const box = $("alsoBox");
+  const items = state.ordered_today || [];
+  box.classList.toggle("hidden", state.locked || !items.length);
+  if (!items.length) return;
+
+  $("alsoStrip").replaceChildren(...items.map((entry) => {
+    const chip = el("button", "alsoChip");
+    chip.type = "button";
+    chip.append(el("span", null, entry.desc));
+    chip.append(el("i", null, `·${entry.count}`));
+    chip.onclick = () => {
+      $("pItem").value = entry.desc;
+      $("pItem").focus();
+    };
+    return chip;
+  }));
 }
 
 function renderMine() {
@@ -364,7 +391,37 @@ function askIfSamePerson(info) {
   box.classList.remove("hidden");
 }
 
-async function submitOrder(confirm) {
+/* They typed a dish someone has already ordered, worded differently. Using one
+   wording keeps it as a single line with a count, which is the number that can
+   be checked against the receipt. Same el() rule as above: coworkers wrote
+   this text. */
+function askIfSameDish(info, confirm) {
+  const box = $("samePrompt");
+
+  // `confirm` is carried straight back through. Both questions can fire on one
+  // order -- a shared first name AND a reworded dish -- and re-asking the name
+  // question after they had already answered it would loop forever.
+  const yes = el("button", "primary", "Yes — use their wording");
+  yes.type = "button";
+  yes.onclick = () => {
+    $("pItem").value = info.match;
+    submitOrder(confirm, true);
+  };
+
+  const no = el("button", "ghost", "No, mine is different");
+  no.type = "button";
+  no.onclick = () => submitOrder(confirm, true);
+
+  const buttons = el("div", "sameBtns");
+  buttons.append(yes, no);
+  box.replaceChildren(
+    el("p", null, `${info.count} ${info.count === 1 ? "person" : "people"} `
+                  + `ordered "${info.match}". Is that the same thing?`),
+    buttons);
+  box.classList.remove("hidden");
+}
+
+async function submitOrder(confirm, itemOk) {
   const name = $("pName").value.trim();
   const item = $("pItem").value.trim();
   if (!name || !item) return;
@@ -373,6 +430,9 @@ async function submitOrder(confirm) {
   // Already ordered under this name in this sitting, so it is the same person
   // adding a second item -- don't make them confirm it again.
   if (confirm || orderedHere.has(name.toLowerCase())) body.confirm = "add";
+  // Kept separate from confirm above: answering the name question must not
+  // silently answer the wording question too.
+  if (itemOk) body.item_ok = true;
 
   try {
     state = await api("/api/public/order", body);
@@ -383,7 +443,9 @@ async function submitOrder(confirm) {
     render();
     toast(`Added ${item}`);
   } catch (err) {
-    if (err.data && err.data.error === "name_taken") askIfSamePerson(err.data);
+    const problem = err.data && err.data.error;
+    if (problem === "name_taken") askIfSamePerson(err.data);
+    else if (problem === "similar_item") askIfSameDish(err.data, confirm);
     else toast(err.message, true);
   }
 }

@@ -92,6 +92,7 @@
   <!-- 3 ---------------------------------------------------------------- -->
   <section class="panel hidden" data-panel="prices">
     <p class="hint">Type each price <b>once</b> — everyone who ordered it updates automatically.</p>
+    <div id="mergeOffers"></div>
     <div id="priceRows" class="list"></div>
 
     <div class="receiptCheck">
@@ -103,8 +104,16 @@
         </div>
       </div>
       <label class="f">
-        <span id="receiptLabel">Receipt total</span>
-        <div class="money"><i>$</i><input id="receiptTotal" inputmode="decimal" placeholder="what it came to"></div>
+        <span>Subtotal before surcharge</span>
+        <div class="money"><i>$</i><input id="receiptSubtotal" inputmode="decimal" placeholder="the receipt's own item total"></div>
+      </label>
+      <label class="f">
+        <span>Items on the receipt</span>
+        <input id="receiptItems" inputmode="numeric" placeholder="count the lines — 5x counts as 5">
+      </label>
+      <label class="f">
+        <span id="receiptLabel">Total charged to you</span>
+        <div class="money"><i>$</i><input id="receiptTotal" inputmode="decimal" placeholder="what left your pocket"></div>
       </label>
       <label class="f" id="handedField">
         <span>Cash you handed over</span>
@@ -117,6 +126,19 @@
   <!-- 4 ---------------------------------------------------------------- -->
   <section class="panel hidden" data-panel="change">
     <div id="changeList" class="list"></div>
+
+    <div class="receiptCheck">
+      <h3 class="groupHead">Count your money <small>check the app against your pocket</small></h3>
+      <label class="f">
+        <span>Cash you're holding</span>
+        <div class="money"><i>$</i><input id="countCash" inputmode="decimal" placeholder="after change handed back"></div>
+      </label>
+      <label class="f">
+        <span>Venmo received</span>
+        <div class="money"><i>$</i><input id="countVenmo" inputmode="decimal" placeholder="what has actually landed"></div>
+      </label>
+      <div id="countVerdict" class="verdict"></div>
+    </div>
   </section>
 
 </main>
