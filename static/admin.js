@@ -554,35 +554,50 @@ function checkReceipt() {
     return;
   }
 
+  const has = (v) => v !== null && v !== undefined;
   const parts = [];
   let bad = false;
 
-  if (t.subtotal_diff_cents !== null && t.subtotal_diff_cents !== undefined) {
-    if (t.subtotal_diff_cents === 0) parts.push("✓ items match the receipt");
+  if (has(t.subtotal_diff_cents)) {
+    if (t.subtotal_diff_cents === 0) parts.push("✓ items and money both match");
     else parts.push(`$${t.subtotal_diff} ${t.subtotal_diff_cents > 0 ? "over" : "under"}`);
     bad = bad || t.subtotal_diff_cents !== 0;
   }
-  if (t.count_diff !== null && t.count_diff !== undefined) {
+  if (has(t.count_diff)) {
     if (t.count_diff === 0) parts.push(`${t.keyed_items} items`);
     else parts.push(`${t.keyed_items} keyed, ${t.receipt_items_count} on the receipt`);
     bad = bad || t.count_diff !== 0;
   }
-  if (t.surcharge_pct !== null && t.surcharge_pct !== undefined) {
-    parts.push(`${t.surcharge_pct}% surcharge`);
-  }
+  if (has(t.surcharge_pct)) parts.push(`${t.surcharge_pct}% surcharge`);
 
   // Nothing to compare against yet -- fall back to the old estimate.
   if (!parts.length) {
     if (!raw) { verdict.className = "verdict"; verdict.textContent = ""; return; }
     const diff = typed - t.bill_cents;
     bad = diff !== 0;
-    parts.push(diff === 0 ? `✓ matches my total of $${t.bill}`
+    // No tick here even when it agrees: this only compares the receipt against
+    // items plus 4.712% tax, which is not what most places actually charge.
+    parts.push(diff === 0 ? `matches my tax estimate of $${t.bill}`
                           : `off by $${(Math.abs(diff) / 100).toFixed(2)} from my $${t.bill}`
                             + " — type the receipt subtotal for a real check");
   }
   if (t.restaurant_change) parts.push(`they gave you $${t.restaurant_change} back`);
 
-  verdict.className = "verdict " + (bad ? "r" : "g");
+  /* Green has to mean "the money was checked and it was right". The subtotal
+     is the only field that checks money -- the item count catches a plate that
+     was never made, but says nothing about a plate rung up at the wrong price.
+     Without a subtotal this used to go green off a matching count alone, which
+     is the same lie as the old permanently-red check, just the other way up:
+     a signal that does not mean what it looks like. Amber instead, saying what
+     is still missing. */
+  if (bad) {
+    verdict.className = "verdict r";
+  } else if (has(t.subtotal_diff_cents)) {
+    verdict.className = "verdict g";
+  } else {
+    verdict.className = "verdict a";
+    parts.push("add the subtotal to check the money");
+  }
   verdict.textContent = parts.join(" · ");
 }
 

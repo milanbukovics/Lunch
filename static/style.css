@@ -328,13 +328,20 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .mergeList { margin: 0 0 12px; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
 .mergeList li { margin: 3px 0; }
 
-/* The block is a wrapping flex row of fields, so a heading has to claim a
-   whole line of its own rather than sitting in beside the first input. */
+/* The block is a wrapping flex row of fields, so a heading or an explanation
+   has to claim a whole line of its own rather than squeezing in beside the
+   first input. The inputs are only 150px wide, which is why what these boxes
+   are for is explained here and not in a placeholder -- a long placeholder is
+   silently clipped mid-word. */
 .receiptCheck .groupHead { width: 100%; margin: 0; }
+.receiptCheck .hint { width: 100%; margin: 0; }
 
 .verdict { font-weight: 650; padding-bottom: 11px; }
 .verdict.g { color: var(--green); }
 .verdict.r { color: var(--red); }
+/* Checked and correct is green; checked and wrong is red. Amber is neither --
+   it means a comparison has not run yet, so nothing has been confirmed. */
+.verdict.a { color: var(--amber); }
 
 /* --- cash bar ----------------------------------------------------------- */
 

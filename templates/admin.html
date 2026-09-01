@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lunch Calculator</title>
+<title>Wasa Lunch Order</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -96,6 +96,9 @@
     <div id="priceRows" class="list"></div>
 
     <div class="receiptCheck">
+      <p class="hint">All three come off the receipt: the item total <b>before</b> any card fee,
+        how many things it lists (a <b>5x</b> line counts as 5), and what actually left your
+        pocket. The first two are what catch a mis-rung order.</p>
       <div class="f">
         <span>You paid with</span>
         <div class="toggle" id="payMethod">
@@ -105,19 +108,19 @@
       </div>
       <label class="f">
         <span>Subtotal before surcharge</span>
-        <div class="money"><i>$</i><input id="receiptSubtotal" inputmode="decimal" placeholder="the receipt's own item total"></div>
+        <div class="money"><i>$</i><input id="receiptSubtotal" inputmode="decimal" placeholder="226.25"></div>
       </label>
       <label class="f">
         <span>Items on the receipt</span>
-        <input id="receiptItems" inputmode="numeric" placeholder="count the lines — 5x counts as 5">
+        <input id="receiptItems" inputmode="numeric" placeholder="15">
       </label>
       <label class="f">
         <span id="receiptLabel">Total charged to you</span>
-        <div class="money"><i>$</i><input id="receiptTotal" inputmode="decimal" placeholder="what left your pocket"></div>
+        <div class="money"><i>$</i><input id="receiptTotal" inputmode="decimal" placeholder="233.04"></div>
       </label>
       <label class="f" id="handedField">
         <span>Cash you handed over</span>
-        <div class="money"><i>$</i><input id="cashHanded" inputmode="decimal" placeholder="bills you gave"></div>
+        <div class="money"><i>$</i><input id="cashHanded" inputmode="decimal" placeholder="240.00"></div>
       </label>
       <div id="receiptVerdict" class="verdict"></div>
     </div>
@@ -129,13 +132,15 @@
 
     <div class="receiptCheck">
       <h3 class="groupHead">Count your money <small>check the app against your pocket</small></h3>
+      <p class="hint">Count the notes in your pocket and check what has landed in Venmo. If the
+        two add up but the split is wrong, a payment is filed under the wrong method.</p>
       <label class="f">
         <span>Cash you're holding</span>
-        <div class="money"><i>$</i><input id="countCash" inputmode="decimal" placeholder="after change handed back"></div>
+        <div class="money"><i>$</i><input id="countCash" inputmode="decimal" placeholder="172.00"></div>
       </label>
       <label class="f">
         <span>Venmo received</span>
-        <div class="money"><i>$</i><input id="countVenmo" inputmode="decimal" placeholder="what has actually landed"></div>
+        <div class="money"><i>$</i><input id="countVenmo" inputmode="decimal" placeholder="72.00"></div>
       </label>
       <div id="countVerdict" class="verdict"></div>
     </div>

@@ -821,6 +821,49 @@ def test_menu_files(srv, D):
     check("padding rule is specific enough to survive the shorthand",
           "input.editPrice" in css)
 
+    section("NOTHING EXPLAINS ITSELF IN A BOX TOO NARROW TO READ IT")
+    # .money inputs are a fixed 150px. A long placeholder is silently clipped
+    # mid-word -- "the receipt's own item total" showed as "the receipt's owr",
+    # so the field meant to explain the check explained nothing. Anything that
+    # needs more than a short example belongs in a hint line instead.
+    admin = (HERE / "templates" / "admin.html").read_text(encoding="utf-8")
+    money_boxes = re.findall(r'<div class="money">.*?</div>', admin, re.S)
+    check("every money box is found", len(money_boxes) >= 6, str(len(money_boxes)))
+    too_long = []
+    for box in money_boxes:
+        for placeholder in re.findall(r'placeholder="([^"]*)"', box):
+            if len(placeholder) > 12:
+                too_long.append(placeholder)
+    check("no money placeholder can be clipped", not too_long, str(too_long))
+    check("the receipt fields are explained in a hint instead",
+          "come off the receipt" in admin)
+    check("hints get a line of their own in the flex row",
+          ".receiptCheck .hint" in css)
+
+    section("GREEN MEANS THE MONEY WAS CHECKED")
+    # A matching item count alone used to paint green, having compared nothing
+    # about money -- the same lie as the old permanently-red check, inverted.
+    js = (HERE / "static" / "admin.js").read_text(encoding="utf-8")
+    check("green is gated on the subtotal having been entered",
+          re.search(r'has\(t\.subtotal_diff_cents\)\)\s*\{\s*'
+                    r'verdict\.className = "verdict g"', js) is not None)
+    check("there is an amber 'not checked yet' state", 'verdict a' in js)
+    check("  ...and it is styled", ".verdict.a" in css)
+    check("the tax-estimate fallback no longer claims a tick",
+          "✓ matches my total" not in js)
+
+    section("THE APP HAS A NAME")
+    for page, title in (("order", "Wasa Lunch Order"),
+                        ("admin", "Wasa Lunch Order"),
+                        ("history", "Wasa Lunch — History"),
+                        ("login", "Wasa Lunch — Organiser")):
+        html = (HERE / "templates" / f"{page}.html").read_text(encoding="utf-8")
+        check(f"{page}.html tab reads '{title}'", f"<title>{title}</title>" in html)
+    # The header brand sits beside the place name; repeating the full name
+    # there is what made it read "Lunch Lunch" before.
+    check("the header brand is left alone",
+          '<div class="brand">Lunch</div>' in admin)
+
 
 def test_encoding():
     """Text that was UTF-8, got read as Windows-1252, and saved back that way.
