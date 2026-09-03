@@ -14,6 +14,7 @@ import secrets
 import threading
 from collections import Counter
 from functools import wraps
+from urllib.parse import urlparse
 
 from flask import (Flask, Response, jsonify, redirect, render_template, request,
                    session, url_for)
@@ -262,6 +263,9 @@ def admin_view(day):
                              if day.get("receipt_subtotal_cents") is not None else ""),
         "receipt_items": ("" if day.get("receipt_items") is None
                           else str(day["receipt_items"])),
+        # Trailing zeros trimmed: 3.0 shows as "3", which is what they typed.
+        "surcharge_pct": ("" if day.get("surcharge_pct") is None
+                          else f"{float(day['surcharge_pct']):g}"),
         "restaurant_paid": (money(day["restaurant_paid_cents"])
                             if day.get("restaurant_paid_cents") is not None else ""),
         "restaurant_method": core.restaurant_method_of(day),
@@ -276,6 +280,14 @@ def admin_view(day):
                               else money(abs(t["subtotal_diff_cents"]))),
             "count_diff": t["count_diff"],
             "surcharge_pct": t["surcharge_pct"],
+            "expected_pct": t["expected_pct"],
+            "implied_pct": t["implied_pct"],
+            "charge_diff_cents": t["charge_diff_cents"],
+            "food_diff": (None if t["food_diff_cents"] is None
+                          else money(abs(t["food_diff_cents"]))),
+            "food_diff_cents": t["food_diff_cents"],
+            "expected_charge": (None if t["expected_charge_cents"] is None
+                                else money(t["expected_charge_cents"])),
             "collected": money(t["collected_cents"]),
             "change_out": money(t["change_out_cents"]),
             "cash_in": money(t["cash_in_cents"]),
@@ -329,10 +341,20 @@ def flush_learn():
 
 
 def resolved(day_date):
-    """Fill in an unset restaurant method from the most recent day that chose one."""
+    """Fill in an unset restaurant method from the most recent day that chose one.
+
+    The surcharge is filled in the same way, but from the last day at the SAME
+    restaurant -- one place charges 3% on a card and the next charges nothing.
+    Neither is written back here: this is the read path, so they are a
+    suggestion until the organiser saves the receipt panel. That also keeps the
+    lookup out of the write transaction, where walking other days to find it
+    would take a second lock and deadlock.
+    """
     day = store.load_day(day_date)
     if day.get("restaurant_method") not in ("cash", "card"):
         day["restaurant_method"] = store.inherited_restaurant_method(day_date)
+    if day.get("surcharge_pct") is None:
+        day["surcharge_pct"] = store.inherited_surcharge_pct(day_date, day.get("place"))
     return day
 
 
@@ -390,13 +412,59 @@ def sniff_type(blob):
     return None
 
 
+# A pasted link is stored as a menu_files row with this mime and the URL as its
+# bytes. Reusing that table gets per-place scoping, the six-file limit, ordering
+# and deletion for nothing, and needs no migration on the live database.
+LINK_MIME = "text/uri-list"
+MAX_URL = 2000
+
+
+def safe_menu_url(raw):
+    """The URL if it is safe to hand a coworker, else None.
+
+    This is the one input in the app that another person's browser is invited
+    to click, so the scheme is an allowlist and nothing else gets through. A
+    'javascript:' href runs script on a page the whole office opens, and
+    'data:' is a page of someone else's choosing wearing our name. Reject
+    outright -- never try to clean one up.
+    """
+    text = (raw or "").strip()
+    if not text or len(text) > MAX_URL:
+        return None
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in ("http", "https"):
+        return None
+    if not parsed.netloc:
+        return None
+    return text
+
+
+def link_label(url):
+    """The host, which says where a link goes without anyone typing a name."""
+    host = urlparse(url).netloc.split("@")[-1].split(":")[0]
+    return host[4:] if host.lower().startswith("www.") else host
+
+
 def menu_view(place):
     """What the pages need to show a menu: never the bytes."""
     if not place:
         return []
-    return [{"id": f["id"], "filename": f["filename"],
-             "kind": "pdf" if f["mime"] == "application/pdf" else "image"}
-            for f in store.list_menu_files(place)]
+    out = []
+    for f in store.list_menu_files(place):
+        if f["mime"] == LINK_MIME:
+            meta, blob = store.load_menu_file(f["id"])
+            url = safe_menu_url(blob.decode("utf-8", "replace"))
+            if url is None:
+                continue          # stored before a rule tightened: don't serve it
+            out.append({"id": f["id"], "filename": f["filename"],
+                        "kind": "link", "url": url})
+        else:
+            out.append({"id": f["id"], "filename": f["filename"],
+                        "kind": "pdf" if f["mime"] == "application/pdf" else "image"})
+    return out
 
 
 @app.get("/menu/<file_id>")
@@ -404,6 +472,10 @@ def menu_file(file_id):
     """Public: coworkers have to be able to read the menu."""
     meta, blob = store.load_menu_file(file_id)
     if meta is None:
+        return jsonify({"error": "No such file"}), 404
+    if meta["mime"] == LINK_MIME:
+        # A pasted link is never served back from our own origin -- the page
+        # links straight at the destination instead.
         return jsonify({"error": "No such file"}), 404
     return Response(blob, mimetype=meta["mime"], headers={
         # The stored mime came from sniff_type, not from the uploader.
@@ -440,6 +512,30 @@ def upload_menu_file():
 
     name = os.path.basename(upload.filename)[:120]
     store.save_menu_file(place, name, mime, blob)
+    return jsonify({"menu": menu_view(place)})
+
+
+@app.post("/api/menu-link")
+@admin_required
+def add_menu_link():
+    """Some restaurants just have a web page; photographing a screen is silly."""
+    body = request.get_json(silent=True) or {}
+    place = (body.get("place") or "").strip()
+    if not place:
+        return jsonify({"error": "Set the Place first — menus are saved "
+                                 "per restaurant."}), 400
+
+    url = safe_menu_url(body.get("url"))
+    if url is None:
+        return jsonify({"error": "That isn't a web address. It has to start "
+                                 "with http:// or https://"}), 400
+
+    if len(store.list_menu_files(place)) >= MENU_FILE_LIMIT:
+        return jsonify({"error": f"{place} already has {MENU_FILE_LIMIT} menu "
+                                 "files — remove one first."}), 400
+
+    blob = url.encode("utf-8")
+    store.save_menu_file(place, link_label(url), LINK_MIME, blob)
     return jsonify({"menu": menu_view(place)})
 
 
@@ -722,6 +818,21 @@ def act_receipt(day, body):
             day["receipt_items"] = int(raw)
         else:
             raise ValueError(f"'{raw}' is not a number of items")
+    # A percentage, likewise not money.
+    if "surcharge_pct" in body:
+        raw = str(body.get("surcharge_pct") or "").strip()
+        # Only a genuinely empty box clears it. Stripping the "%" first would
+        # turn a stray "%%" into a blank and silently wipe a saved figure.
+        if not raw:
+            day["surcharge_pct"] = None
+        else:
+            try:
+                pct = float(raw.rstrip("%").strip())
+            except ValueError:
+                raise ValueError(f"'{raw}' is not a percentage")
+            if not 0 <= pct <= 100:
+                raise ValueError("A surcharge is between 0 and 100 percent")
+            day["surcharge_pct"] = pct
 
 
 def act_merge_items(day, body):

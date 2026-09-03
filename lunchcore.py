@@ -181,6 +181,50 @@ def cluster_items(descs):
     return clusters
 
 
+def surcharge_of(day):
+    """The card fee this day expects, as a percent. Typed, or read off an older
+    day that still carries a receipt subtotal."""
+    stored = day.get("surcharge_pct")
+    if stored is not None:
+        return Decimal(str(stored))
+    subtotal = day.get("receipt_subtotal_cents")
+    if subtotal and day.get("receipt_cents") is not None:
+        return (Decimal(day["receipt_cents"] - subtotal) / Decimal(subtotal) * 100)
+    return None
+
+
+def charge_with_fee(subtotal_cents, pct):
+    """What a till would ring up: round the fee, then add it.
+
+    Doner Shack's receipt goes 226.25 -> fee 6.79 -> 233.04, so the fee is
+    rounded to the cent on its own and then added. Doing it as one
+    multiplication would round in a different place and be a cent out.
+    """
+    fee = (Decimal(subtotal_cents) * Decimal(pct) / 100).to_integral_value(ROUND_HALF_UP)
+    return subtotal_cents + int(fee)
+
+
+def inherited_surcharge_pct(day_date, place):
+    """The fee last recorded for THIS restaurant, on or before this day.
+
+    Matched on place, not just the most recent day: one place charges 3% for a
+    card and the next charges nothing, so carrying yesterday's figure into an
+    unrelated restaurant would invent a mismatch every time.
+    """
+    if not place:
+        return None
+    wanted = place.strip().casefold()
+    for saved in list_saved_dates():          # newest first
+        if saved <= day_date:
+            day = load_day(saved)
+            if (day.get("place") or "").strip().casefold() != wanted:
+                continue
+            pct = surcharge_of(day)
+            if pct is not None:
+                return float(round(pct, 3))
+    return None
+
+
 def group_items(day):
     """One entry per distinct item across everyone, for the call list and the
     receipt-pricing screen. Prices are typed once per item, not once per person."""
@@ -266,6 +310,30 @@ def totals(day):
             float(Decimal(day["receipt_cents"] - receipt_subtotal)
                   / Decimal(receipt_subtotal) * 100), 1)
 
+    # The money check, without needing a subtotal off the receipt. Run FORWARDS:
+    # what the till should have rung up for these orders, against what it did.
+    # Dividing the charged total back out to recover a subtotal would carry up
+    # to a cent of rounding, and a check that cries "$0.01 over" on a correct
+    # order is a check that gets ignored -- which has already happened twice.
+    # Forwards, both sides round the same way and a right order lands on zero.
+    expected_pct = surcharge_of(day)
+    charged = day.get("receipt_cents")
+    expected_charge = charge_diff = food_diff = implied_pct = None
+    if expected_pct is not None and items_cents:
+        expected_charge = charge_with_fee(items_cents, expected_pct)
+        if charged is not None:
+            charge_diff = charged - expected_charge
+            # Shown in food terms: the raw gap includes the fee charged on the
+            # discrepancy, and only the food figure maps onto a menu price.
+            food_diff = int((Decimal(charge_diff) / (1 + Decimal(expected_pct) / 100))
+                            .to_integral_value(ROUND_HALF_UP))
+    if charged is not None and items_cents:
+        # What the fee would have to have been for these orders to be right.
+        # Negative means they charged less than the food alone, so the orders
+        # are what is wrong, not the fee.
+        implied_pct = round(
+            float(Decimal(charged - items_cents) / Decimal(items_cents) * 100), 1)
+
     cash_left = collected - change_out
     cash_on_hand = cash_in - cash_change
     venmo_held = venmo_in - venmo_change
@@ -290,6 +358,11 @@ def totals(day):
         "surcharge_pct": surcharge_pct,
         "receipt_subtotal_cents": receipt_subtotal,
         "receipt_items": receipt_items,
+        "expected_pct": None if expected_pct is None else float(round(expected_pct, 3)),
+        "expected_charge_cents": expected_charge,
+        "charge_diff_cents": charge_diff,
+        "food_diff_cents": food_diff,
+        "implied_pct": implied_pct,
         "collected_cents": collected,
         "change_out_cents": change_out,
         "cash_left_cents": cash_left,
@@ -328,7 +401,8 @@ def new_day(day_date=None):
     return {"date": day_date or today_str(), "place": "", "orders": [],
             "receipt_cents": None, "restaurant_paid_cents": None,
             "restaurant_method": None, "locked": False, "organiser": "",
-            "receipt_subtotal_cents": None, "receipt_items": None}
+            "receipt_subtotal_cents": None, "receipt_items": None,
+            "surcharge_pct": None}
 
 
 def day_path(day_date):
@@ -363,8 +437,9 @@ def load_day(day_date):
     day.setdefault("restaurant_method", None)      # None = inherit / default cash
     day.setdefault("locked", False)                # True = public ordering closed
     day.setdefault("organiser", "")                # who picked up; "" = unrecorded
-    day.setdefault("receipt_subtotal_cents", None)  # receipt's own item total
+    day.setdefault("receipt_subtotal_cents", None)  # older days only; not collected now
     day.setdefault("receipt_items", None)           # how many lines it billed
+    day.setdefault("surcharge_pct", None)           # the place's card fee, if known
     return day
 
 

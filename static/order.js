@@ -207,6 +207,17 @@ function renderMenu() {
   if (!files.length) return;
 
   $("menuStrip").replaceChildren(...files.map((file) => {
+    if (file.kind === "link") {
+      // Straight to the restaurant's own page, in a new tab. Not the lightbox
+      // -- that is for images we host. The server has already checked the URL
+      // is http(s); noreferrer as well as noopener because we do not control
+      // where it goes. The label goes in via el(), so it is text, never markup.
+      const link = el("a", "menuLink", file.filename);
+      link.href = file.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      return link;
+    }
     if (file.kind === "pdf") {
       // Handed to the phone's own PDF viewer, where zoom and paging already
       // work properly -- far better than anything reimplemented here.

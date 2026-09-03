@@ -192,6 +192,7 @@ def _normalise(day, day_date):
     day.setdefault("organiser", "")
     day.setdefault("receipt_subtotal_cents", None)
     day.setdefault("receipt_items", None)
+    day.setdefault("surcharge_pct", None)
     return day
 
 
@@ -418,3 +419,23 @@ def inherited_restaurant_method(day_date):
             if stored in ("cash", "card"):
                 return stored
     return "cash"
+
+
+def inherited_surcharge_pct(day_date, place):
+    """Same rule as lunchcore's, but reading from the active backend.
+
+    Matched on place: one restaurant charges 3% for a card and the next
+    charges nothing, so the figure has to follow the restaurant.
+    """
+    if not place:
+        return None
+    wanted = place.strip().casefold()
+    for saved in list_saved_dates():                 # newest first
+        if saved <= day_date:
+            day = load_day(saved)
+            if (day.get("place") or "").strip().casefold() != wanted:
+                continue
+            pct = core.surcharge_of(day)
+            if pct is not None:
+                return float(round(pct, 3))
+    return None

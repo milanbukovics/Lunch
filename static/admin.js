@@ -66,7 +66,15 @@ function renderMenuAdmin() {
 
   $("adminMenuStrip").replaceChildren(...files.map((file) => {
     const wrap = el("div", "menuItem");
-    if (file.kind === "pdf") {
+    if (file.kind === "link") {
+      // The server has already checked this is http(s); noreferrer as well as
+      // noopener because it points somewhere we do not control.
+      const link = el("a", "menuLink", file.filename);
+      link.href = file.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      wrap.append(link);
+    } else if (file.kind === "pdf") {
       const link = el("a", "menuPdf", file.filename);
       link.href = `/menu/${file.id}`;
       link.target = "_blank";
@@ -155,6 +163,31 @@ async function uploadMenuFiles(files) {
   renderMenuAdmin();
 }
 
+/* Some places just have a web page, and photographing a screen to upload it is
+   silly. The server does the checking -- it only accepts http and https, since
+   this ends up as a link every coworker is invited to click. */
+async function addMenuLink() {
+  if (needsPlace()) return;
+  const box = $("menuUrl");
+  const url = box.value.trim();
+  if (!url) { box.focus(); return; }
+
+  try {
+    const response = await fetch("/api/menu-link", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, place: state.place.trim() }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not add that link");
+    state.menu = data.menu;
+    box.value = "";
+    renderMenuAdmin();
+    toast("Link added");
+  } catch (err) {
+    toast(err.message, true);
+    box.focus();
+  }
+}
+
 async function removeMenuFile(id) {
   try {
     const response = await fetch("/api/menu-file/delete", {
@@ -179,8 +212,8 @@ function render() {
     { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   if ($("place") !== document.activeElement) $("place").value = state.place;
   for (const [id, value] of [["receiptTotal", state.receipt],
-                             ["receiptSubtotal", state.receipt_subtotal],
                              ["receiptItems", state.receipt_items],
+                             ["surchargePct", state.surcharge_pct],
                              ["cashHanded", state.restaurant_paid]]) {
     if ($(id) !== document.activeElement) $(id).value = value;
   }
@@ -193,7 +226,7 @@ function render() {
   }
   $("handedField").classList.toggle("hidden", byCard);
   // Named for what left your pocket, not "receipt total" -- a receipt carries
-  // three different numbers and the subtotal field above wants a different one.
+  // several numbers and this is specifically the one that hit your account.
   $("receiptLabel").textContent = byCard ? "Charged to card" : "Total you paid";
 
   $("lockBtn").textContent = state.locked ? "Reopen orders" : "Close orders";
@@ -556,47 +589,60 @@ function checkReceipt() {
 
   const has = (v) => v !== null && v !== undefined;
   const parts = [];
-  let bad = false;
+  const countWrong = has(t.count_diff) && t.count_diff !== 0;
+  const moneyWrong = has(t.charge_diff_cents) && t.charge_diff_cents !== 0;
 
-  if (has(t.subtotal_diff_cents)) {
-    if (t.subtotal_diff_cents === 0) parts.push("✓ items and money both match");
-    else parts.push(`$${t.subtotal_diff} ${t.subtotal_diff_cents > 0 ? "over" : "under"}`);
-    bad = bad || t.subtotal_diff_cents !== 0;
+  /* Two things can go wrong and they want different answers, so say which.
+     The item count is what tells them apart now that the subtotal box is gone:
+     if the receipt lists a different NUMBER of things, something was never rung
+     up and it is the order. If it lists the right number for the wrong money,
+     the order was fine and it is a price or the fee. */
+  if (countWrong) {
+    parts.push(`${t.keyed_items} keyed, ${t.receipt_items_count} on the receipt`);
+  } else if (has(t.count_diff)) {
+    parts.push(`${t.keyed_items} items`);
   }
-  if (has(t.count_diff)) {
-    if (t.count_diff === 0) parts.push(`${t.keyed_items} items`);
-    else parts.push(`${t.keyed_items} keyed, ${t.receipt_items_count} on the receipt`);
-    bad = bad || t.count_diff !== 0;
+
+  if (moneyWrong) {
+    // In food terms: the raw gap carries the fee charged on the discrepancy,
+    // and only the food figure matches a price on the menu.
+    parts.push(`$${t.food_diff} ${t.food_diff_cents > 0 ? "more" : "less"} than your orders`);
+    if (!countWrong && has(t.implied_pct)) {
+      parts.push(t.implied_pct >= 0
+        ? `the fee looks like ${t.implied_pct}%, not the usual ${t.expected_pct}%`
+        : `charged less than the food alone — check the prices`);
+    }
+  } else if (has(t.charge_diff_cents)) {
+    parts.push("✓ items and money both match");
+    if (has(t.expected_pct)) parts.push(`${t.expected_pct}% surcharge as expected`);
   }
-  if (has(t.surcharge_pct)) parts.push(`${t.surcharge_pct}% surcharge`);
 
   // Nothing to compare against yet -- fall back to the old estimate.
   if (!parts.length) {
     if (!raw) { verdict.className = "verdict"; verdict.textContent = ""; return; }
     const diff = typed - t.bill_cents;
-    bad = diff !== 0;
     // No tick here even when it agrees: this only compares the receipt against
     // items plus 4.712% tax, which is not what most places actually charge.
     parts.push(diff === 0 ? `matches my tax estimate of $${t.bill}`
-                          : `off by $${(Math.abs(diff) / 100).toFixed(2)} from my $${t.bill}`
-                            + " — type the receipt subtotal for a real check");
+                          : `off by $${(Math.abs(diff) / 100).toFixed(2)} from my $${t.bill}`);
   }
   if (t.restaurant_change) parts.push(`they gave you $${t.restaurant_change} back`);
 
-  /* Green has to mean "the money was checked and it was right". The subtotal
-     is the only field that checks money -- the item count catches a plate that
-     was never made, but says nothing about a plate rung up at the wrong price.
-     Without a subtotal this used to go green off a matching count alone, which
-     is the same lie as the old permanently-red check, just the other way up:
-     a signal that does not mean what it looks like. Amber instead, saying what
-     is still missing. */
-  if (bad) {
+  /* Red is reserved for "your order and the receipt disagree" -- the signal
+     that catches a plate nobody made. A fee that crept up is real money but is
+     not a mis-rung order, so it gets amber and keeps red meaning one thing.
+     Amber also covers "not checked yet": green must never appear off a
+     comparison that never ran, which is how this went wrong before. */
+  if (countWrong) {
     verdict.className = "verdict r";
-  } else if (has(t.subtotal_diff_cents)) {
+  } else if (moneyWrong) {
+    verdict.className = "verdict a";
+  } else if (has(t.charge_diff_cents)) {
     verdict.className = "verdict g";
   } else {
     verdict.className = "verdict a";
-    parts.push("add the subtotal to check the money");
+    parts.push(has(t.expected_pct) ? "type what you were charged to check the money"
+                                   : "set the surcharge % to check the money");
   }
   verdict.textContent = parts.join(" · ");
 }
@@ -663,8 +709,8 @@ function checkCount() {
 
 function saveReceipt() {
   send("/api/receipt", { receipt: $("receiptTotal").value,
-                         receipt_subtotal: $("receiptSubtotal").value,
                          receipt_items: $("receiptItems").value,
+                         surcharge_pct: $("surchargePct").value,
                          restaurant_paid: $("cashHanded").value }, "Receipt saved");
 }
 
@@ -852,7 +898,7 @@ $("orderForm").onsubmit = async (event) => {
   }
 };
 
-for (const id of ["receiptTotal", "receiptSubtotal", "receiptItems", "cashHanded"]) {
+for (const id of ["receiptTotal", "receiptItems", "surchargePct", "cashHanded"]) {
   $(id).onchange = saveReceipt;
   $(id).onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } };
 }
@@ -890,6 +936,12 @@ dropZone.addEventListener("drop", (event) => {
   event.preventDefault();
   const files = [...event.dataTransfer.files];
   if (files.length) uploadMenuFiles(files);
+});
+
+$("menuUrlAdd").onclick = addMenuLink;
+// Enter in the box adds it, rather than doing nothing or submitting a form.
+$("menuUrl").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); addMenuLink(); }
 });
 
 $("place").onchange = () => send("/api/place", { place: $("place").value }, "Place saved");

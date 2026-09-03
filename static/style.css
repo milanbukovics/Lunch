@@ -435,6 +435,21 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .menuPdf::before { content: "PDF  "; color: var(--muted); }
 .menuPdf:hover { border-color: var(--accent); }
 
+/* A link to the restaurant's own page. Same chip as a PDF -- both leave the
+   site in a new tab -- with the arrow saying so. */
+.menuLink {
+  display: inline-block; padding: 10px 14px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--surface);
+  color: var(--accent); font-weight: 650; text-decoration: none;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menuLink::after { content: "  ↗"; color: var(--muted); }
+.menuLink:hover { border-color: var(--accent); }
+
+/* The link box sits under the drop zone, sharing its width. */
+.linkAdd { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px; }
+.linkAdd .f { flex: 1 1 240px; }
+
 .menuAdmin { margin: 18px 0 6px; padding-top: 16px; border-top: 1px solid var(--line); }
 .menuAdmin .groupHead small { font-weight: 400; color: var(--muted); font-size: 12.5px; }
 .menuAdmin .hint { margin: 2px 0 10px; }

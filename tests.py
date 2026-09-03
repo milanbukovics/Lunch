@@ -267,30 +267,77 @@ def test_receipt_check():
     day = _day([_order("A", 1500), _order("B", 1500), _order("C", 1500)])
 
     t = core.totals(day)
-    check("no receipt subtotal means no comparison, not a false alarm",
-          t["subtotal_diff_cents"] is None and t["count_diff"] is None)
+    check("nothing entered means no comparison, not a false alarm",
+          t["charge_diff_cents"] is None and t["count_diff"] is None)
     check("counts what was keyed in", t["keyed_items"] == 3, str(t["keyed_items"]))
 
     # The 28 Aug shape: one more item keyed than the restaurant ever billed.
-    day["receipt_subtotal_cents"] = 3000
+    day["surcharge_pct"] = 3
     day["receipt_items"] = 2
-    day["receipt_cents"] = 3090
+    day["receipt_cents"] = core.charge_with_fee(3000, 3)      # they billed two
     t = core.totals(day)
-    check("prices the item that was never billed", t["subtotal_diff_cents"] == 1500,
-          money(t["subtotal_diff_cents"]))
-    check("counts it too", t["count_diff"] == 1, str(t["count_diff"]))
-    check("reports the real surcharge, not the assumed tax",
-          t["surcharge_pct"] == 3.0, str(t["surcharge_pct"]))
+    check("counts the item that was never billed", t["count_diff"] == 1,
+          str(t["count_diff"]))
+    check("prices it, in food terms", t["food_diff_cents"] == -1500,
+          money(t["food_diff_cents"]))
+    check("implied fee goes negative, so it is the ORDER not the fee",
+          t["implied_pct"] < 0, str(t["implied_pct"]))
 
     # The state the old check could never reach on a real receipt.
-    day["receipt_subtotal_cents"] = 4500
     day["receipt_items"] = 3
+    day["receipt_cents"] = core.charge_with_fee(4500, 3)
     t = core.totals(day)
     check("a clean order reads exactly zero",
-          t["subtotal_diff_cents"] == 0 and t["count_diff"] == 0,
-          f"{t['subtotal_diff_cents']} / {t['count_diff']}")
+          t["charge_diff_cents"] == 0 and t["count_diff"] == 0,
+          f"{t['charge_diff_cents']} / {t['count_diff']}")
+
+    # Right things, wrong money: the fee moved, not the order.
+    day["receipt_cents"] = core.charge_with_fee(4500, 6)
+    t = core.totals(day)
+    check("count still right", t["count_diff"] == 0)
+    check("but the money is flagged", t["charge_diff_cents"] != 0)
+    check("and the fee actually charged is named", t["implied_pct"] == 6.0,
+          str(t["implied_pct"]))
 
     check("the old estimate is untouched", t["bill_cents"] == core.taxed_cents(4500))
+
+
+def test_forward_comparison_is_exact():
+    """A correct order must land on exactly zero at every rate.
+
+    The temptation is to divide the charged total back out to recover a
+    subtotal, but that carries up to a cent of rounding, and a check that
+    reports "$0.01 over" on a right order is one that gets ignored -- which has
+    already happened twice here. Comparing forwards, both sides round the same
+    way and the answer is exact.
+    """
+    section("THE MONEY CHECK NEVER INVENTS A CENT")
+    drift = []
+    for pct in (0, 3, 3.5, 8.25, 10):
+        for subtotal in range(1, 40000, 11):
+            charged = core.charge_with_fee(subtotal, pct)
+            day = _day([_order("A", subtotal)],
+                       receipt_cents=charged, surcharge_pct=pct)
+            if core.totals(day)["charge_diff_cents"] != 0:
+                drift.append((pct, subtotal))
+    check(f"exact across {5 * len(range(1, 40000, 11)):,} order/rate combinations",
+          not drift, str(drift[:4]))
+    # The real receipt: 226.25 -> fee 6.79 -> 233.04.
+    check("reproduces the Doner Shack receipt to the cent",
+          core.charge_with_fee(22625, 3) == 23304,
+          str(core.charge_with_fee(22625, 3)))
+
+
+def test_surcharge_follows_the_restaurant():
+    section("THE SURCHARGE IS REMEMBERED PER RESTAURANT")
+    check("a typed figure wins", core.surcharge_of({"surcharge_pct": 3}) == 3)
+    # Older days carry a receipt subtotal instead; derive from it so nothing
+    # saved before this change loses its meaning.
+    derived = core.surcharge_of({"receipt_subtotal_cents": 22625,
+                                 "receipt_cents": 23304})
+    check("an older day derives it from its stored subtotal",
+          derived is not None and round(float(derived), 1) == 3.0, str(derived))
+    check("and a day with neither has none", core.surcharge_of({}) is None)
 
 
 def test_storage_parity():
@@ -668,6 +715,49 @@ def test_wording_prompt(srv, D):
     check("a junk item count is refused", code == 400, f"HTTP {code}")
 
 
+def test_menu_link_safety():
+    """The one input another person's browser is invited to click.
+
+    A 'javascript:' href would run script on a page the whole office opens, and
+    'data:' is a page of somebody else's choosing wearing our name. The scheme
+    is an allowlist and everything else is rejected outright -- never cleaned
+    up and let through.
+    """
+    section("A PASTED MENU LINK CANNOT CARRY SCRIPT")
+    refuse = [
+        "javascript:alert(1)", "JavaScript:alert(1)", "  javascript:alert(1)  ",
+        "jAvAsCrIpT:alert(1)", "\tjavascript:alert(1)", "java\nscript:alert(1)",
+        "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)",
+        "file:///C:/Windows/win.ini", "about:blank",
+        "example.com", "//evil.example", "http://", "https://", "", "   ",
+        "http://" + "a" * 2100,
+    ]
+    leaked = [u for u in refuse if webapp.safe_menu_url(u) is not None]
+    check(f"all {len(refuse)} dangerous or malformed URLs refused", not leaked,
+          str(leaked))
+
+    allow = ["https://donershack.com/menu", "http://example.com",
+             "https://a.co/x?y=1#z", "https://menu.example.co.uk/lunch.pdf"]
+    blocked = [u for u in allow if webapp.safe_menu_url(u) is None]
+    check("ordinary http and https links accepted", not blocked, str(blocked))
+
+    check("labelled by host", webapp.link_label("https://a.co/x?y=1") == "a.co")
+    check("  ...with www stripped",
+          webapp.link_label("https://www.DonerShack.com/m") == "DonerShack.com")
+
+    section("AND IS NEVER SERVED FROM OUR OWN ORIGIN")
+    # Nothing a user typed should come back out of our own origin as a body.
+    for js, tag in (("static/order.js", "public page"),
+                    ("static/admin.js", "organiser page")):
+        src = (HERE / js).read_text(encoding="utf-8")
+        block = src[src.index('kind === "link"'):][:600]
+        check(f"{tag} link opens in a new tab", 'target = "_blank"' in block)
+        check(f"{tag} sets noopener AND noreferrer",
+              'rel = "noopener noreferrer"' in block)
+        check(f"{tag} builds the label with el(), so it stays text",
+              'el("a", "menuLink", file.filename)' in block)
+
+
 def test_markup_ids():
     """Every id the scripts look up must exist in the markup.
 
@@ -828,7 +918,7 @@ def test_menu_files(srv, D):
     # needs more than a short example belongs in a hint line instead.
     admin = (HERE / "templates" / "admin.html").read_text(encoding="utf-8")
     money_boxes = re.findall(r'<div class="money">.*?</div>', admin, re.S)
-    check("every money box is found", len(money_boxes) >= 6, str(len(money_boxes)))
+    check("money boxes are found at all", len(money_boxes) >= 4, str(len(money_boxes)))
     too_long = []
     for box in money_boxes:
         for placeholder in re.findall(r'placeholder="([^"]*)"', box):
@@ -836,7 +926,7 @@ def test_menu_files(srv, D):
                 too_long.append(placeholder)
     check("no money placeholder can be clipped", not too_long, str(too_long))
     check("the receipt fields are explained in a hint instead",
-          "come off the receipt" in admin)
+          "the card fee this place adds" in admin)
     check("hints get a line of their own in the flex row",
           ".receiptCheck .hint" in css)
 
@@ -844,13 +934,19 @@ def test_menu_files(srv, D):
     # A matching item count alone used to paint green, having compared nothing
     # about money -- the same lie as the old permanently-red check, inverted.
     js = (HERE / "static" / "admin.js").read_text(encoding="utf-8")
-    check("green is gated on the subtotal having been entered",
-          re.search(r'has\(t\.subtotal_diff_cents\)\)\s*\{\s*'
+    check("green is gated on the money comparison having actually run",
+          re.search(r'has\(t\.charge_diff_cents\)\)\s*\{\s*'
                     r'verdict\.className = "verdict g"', js) is not None)
     check("there is an amber 'not checked yet' state", 'verdict a' in js)
     check("  ...and it is styled", ".verdict.a" in css)
     check("the tax-estimate fallback no longer claims a tick",
           "✓ matches my total" not in js)
+    # Red is what says "a plate is missing". A fee that crept up is real money
+    # but is not a mis-rung order, so it must not spend the same colour.
+    check("a wrong count is red", re.search(r'countWrong\)\s*\{\s*'
+                                            r'verdict\.className = "verdict r"', js))
+    check("a wrong fee alone is amber, not red",
+          re.search(r'moneyWrong\)\s*\{\s*verdict\.className = "verdict a"', js))
 
     section("THE APP HAS A NAME")
     for page, title in (("order", "Wasa Lunch Order"),
@@ -952,6 +1048,9 @@ def main():
         test_same_dish()
         test_merge_keeps_money()
         test_receipt_check()
+        test_forward_comparison_is_exact()
+        test_surcharge_follows_the_restaurant()
+        test_menu_link_safety()
         test_markup_ids()
         test_no_drift()
         test_storage_parity()

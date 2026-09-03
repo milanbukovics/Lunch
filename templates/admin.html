@@ -73,6 +73,13 @@
         <span>Drop a file here, or click to choose</span>
         <input id="menuPick" type="file" accept="image/*,application/pdf" multiple hidden>
       </label>
+      <div class="linkAdd">
+        <label class="f grow">
+          <span>Or link to the menu online</span>
+          <input id="menuUrl" type="url" inputmode="url" placeholder="https://..." autocomplete="off">
+        </label>
+        <button id="menuUrlAdd" class="ghost" type="button">Add link</button>
+      </div>
     </div>
 
     <div id="tally" class="tally"></div>
@@ -96,9 +103,9 @@
     <div id="priceRows" class="list"></div>
 
     <div class="receiptCheck">
-      <p class="hint">All three come off the receipt: the item total <b>before</b> any card fee,
-        how many things it lists (a <b>5x</b> line counts as 5), and what actually left your
-        pocket. The first two are what catch a mis-rung order.</p>
+      <p class="hint">Count the things the receipt lists (a <b>5x</b> line counts as 5) and type
+        what actually left your pocket. The <b>surcharge</b> is the card fee this place adds —
+        type it once and it comes back by itself next time you order from here.</p>
       <div class="f">
         <span>You paid with</span>
         <div class="toggle" id="payMethod">
@@ -107,12 +114,12 @@
         </div>
       </div>
       <label class="f">
-        <span>Subtotal before surcharge</span>
-        <div class="money"><i>$</i><input id="receiptSubtotal" inputmode="decimal" placeholder="226.25"></div>
-      </label>
-      <label class="f">
         <span>Items on the receipt</span>
         <input id="receiptItems" inputmode="numeric" placeholder="15">
+      </label>
+      <label class="f">
+        <span>Surcharge %</span>
+        <input id="surchargePct" inputmode="decimal" placeholder="3">
       </label>
       <label class="f">
         <span id="receiptLabel">Total charged to you</span>
