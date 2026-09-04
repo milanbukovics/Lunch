@@ -150,34 +150,79 @@ function renderAlsoOrdered() {
   }));
 }
 
+/* Which row is currently asking "remove this?". Only one at a time, and it is
+   cleared on every re-render so a poll or a new order never leaves a stray
+   question open. */
+let confirmingIndex = null;
+
 function renderMine() {
   // Driven by what is in the name box, so your order appears as you type it
   // and disappears when you clear it. Nothing is remembered between visits.
   const name = typedName().toLowerCase();
   const me = name && state.orders.find((o) => o.name.trim().toLowerCase() === name);
+  const card = $("mineCard");
   const box = $("mine");
 
+  card.classList.toggle("hidden", !me || !me.items.length);
   if (!me || !me.items.length) {
     box.replaceChildren();
+    $("mineHead").replaceChildren();
+    confirmingIndex = null;
     return;
   }
-  const nodes = [el("h3", "groupHead", "Your order")];
+
+  /* Their own name in the heading. This block used to be titled "Your order"
+     in the same small muted style as every other section label, sitting above
+     rows that looked exactly like the everyone-else list -- nothing said it
+     was about you. A name does. Built with el(), so it is text and not markup:
+     they type it themselves. */
+  const paying = me.method === "venmo" ? "paying by Venmo" : "paying cash";
+  const count = me.items.length === 1 ? "1 item" : `${me.items.length} items`;
+  $("mineHead").replaceChildren(
+    el("h3", "mineTitle", `Your order · ${me.name}`),
+    el("p", "mineSub", `${count}, ${paying}`));
+
+  const nodes = [];
   me.items.forEach((desc, index) => {
-    const row = el("div", "row " + (me.method === "venmo" ? "venmo" : ""));
+    const asking = confirmingIndex === index;
+    const row = el("div", "row mineRow" + (me.method === "venmo" ? " venmo" : "")
+                          + (asking ? " asking" : ""));
     row.append(el("div", "what", desc));
-    row.append(el("div", "chip" + (me.method === "venmo" ? " v" : ""),
-                  me.method === "venmo" ? "Venmo" : "Cash"));
-    if (!state.locked) {
-      const drop = el("button", "x", "×");
-      drop.title = "Remove this";
-      drop.onclick = async () => {
+
+    if (state.locked) {
+      nodes.push(row);
+      return;                       // closed: the note below says why
+    }
+
+    if (!asking) {
+      // A labelled button, not a bare "×" explained only by a title tooltip --
+      // which does not exist on a phone, where most people order.
+      const cancel = el("button", "cancelBtn", "Cancel");
+      cancel.type = "button";
+      cancel.setAttribute("aria-label", `Cancel ${desc}`);
+      cancel.onclick = () => { confirmingIndex = index; renderMine(); };
+      row.append(cancel);
+    } else {
+      const yes = el("button", "primary danger", "Yes, remove");
+      yes.type = "button";
+      yes.onclick = async () => {
         try {
           state = await api("/api/public/remove", { name: me.name, index });
+          confirmingIndex = null;
           render();
-          toast("Removed");
+          toast(`Removed ${desc}`);
         } catch (err) { toast(err.message, true); }
       };
-      row.append(drop);
+      const no = el("button", "ghost", "Keep it");
+      no.type = "button";
+      no.onclick = () => { confirmingIndex = null; renderMine(); };
+
+      const ask = el("div", "askRow");
+      ask.append(el("span", "askText", "Remove this from your order?"));
+      const buttons = el("div", "sameBtns");
+      buttons.append(yes, no);
+      ask.append(buttons);
+      row.append(ask);
     }
     nodes.push(row);
   });
@@ -448,6 +493,7 @@ async function submitOrder(confirm, itemOk) {
   try {
     state = await api("/api/public/order", body);
     orderedHere.add(name.toLowerCase());
+    confirmingIndex = null;        // adding cancels any half-asked removal
     $("pItem").value = "";
     hideSamePrompt();
     $("nameHint").classList.add("hidden");

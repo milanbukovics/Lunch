@@ -527,6 +527,64 @@ def test_web(srv, D):
           len(re.findall(r">Lunch<", html)) == 1,
           f"{len(re.findall(r'>Lunch<', html))} occurrences")
 
+    section("YOUR OWN ORDER IS OBVIOUS, AND SO IS CANCELLING IT")
+    _, mine_js = srv.get("/static/order.js")
+    block = mine_js[mine_js.index("function renderMine"):]
+    block = block[:block.index("\nfunction ")]
+
+    # The control was a bare "x" whose only explanation was a title tooltip --
+    # and phones, where most people order, have no tooltips at all.
+    check("the cancel control carries visible words",
+          'el("button", "cancelBtn", "Cancel")' in block)
+    check("  ...and is not explained by a tooltip alone", ".title =" not in block)
+    check("  ...and names the item for a screen reader",
+          'setAttribute("aria-label"' in block)
+
+    # A mis-tap must not silently bin somebody's lunch: they would not find out
+    # until the food arrived and theirs was missing.
+    check("cancelling asks first, it does not remove on the spot",
+          "confirmingIndex = index" in block
+          and "/api/public/remove" not in block.split("confirmingIndex = index")[0])
+    check("the question offers a way out", '"Keep it"' in block)
+    check("only one row can be asking at a time", "confirmingIndex === index" in block)
+
+    # The heading was the most recessive style on the page. Their own name is
+    # the strongest signal that the block is theirs.
+    check("the heading uses the name they typed", "Your order · ${me.name}" in block)
+    check("item text still goes in through el(), never as markup",
+          'el("div", "what", desc)' in block)
+
+    _, mine_html = srv.get("/")
+    check("the block is a card of its own", 'id="mineCard"' in mine_html)
+    # Someone who has NOT ordered still has to be told why the form vanished.
+    check("the closed note stays outside that card",
+          mine_html.index('id="closedNote"') > mine_html.index('id="mineCard"')
+          and "</div>" in mine_html[mine_html.index('id="mine"'):
+                                    mine_html.index('id="closedNote"')])
+
+    section("CANCELLING ACTUALLY REMOVES THE RIGHT ONE")
+    # Now that this is a button people will press, the endpoint behind it needs
+    # a real test and not just a source pin.
+    cday = core.shift_date(D, -21)
+    srv.post("/api/public/order", date=cday, name="Ron", item="Veggie wrap",
+             method="cash")
+    srv.post("/api/public/order", date=cday, name="Ron", item="Rice plate with lamb",
+             method="cash", confirm="add", item_ok=True)
+    _, raw = srv.get(f"/api/public/day?date={cday}")
+    items = json.loads(raw)["orders"][0]["items"]
+    check("two items on the order", len(items) == 2, str(items))
+
+    code, payload = srv.post("/api/public/remove", date=cday, name="Ron", index=0)
+    left = payload["orders"][0]["items"]
+    check("removing the first leaves the second", code == 200 and left == items[1:],
+          f"HTTP {code} {left}")
+
+    code, _ = srv.post("/api/public/remove", date=cday, name="Ron", index=9)
+    check("an index off the end is refused", code >= 400, f"HTTP {code}")
+
+    code, _ = srv.post("/api/public/remove", date=cday, name="Nobody", index=0)
+    check("you cannot remove a name that isn't there", code >= 400, f"HTTP {code}")
+
     section("THE PAGE REMEMBERS NOBODY BETWEEN VISITS")
     _, js = srv.get("/static/order.js")
     # A link the whole office opens, on shared phones and laptops: a saved name
