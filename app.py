@@ -78,9 +78,65 @@ def unhandled(err):
 
 
 # --- auth ------------------------------------------------------------------
+# The password can be changed from the site. Once one has been set it lives in
+# the settings store as a scrypt hash, and the environment/local password stops
+# working. Until then, nothing here changes how login behaves.
+
+PASSWORD_HASH_KEY = "admin_password_hash"
+PASSWORD_STAMP_KEY = "password_changed_at"
+MIN_PASSWORD_LENGTH = 8
+
+
+def password_stamp():
+    """When the password last changed, or "" if never. Carried in each session
+    so that changing the password logs every OTHER device out -- a signed
+    cookie would otherwise stay valid for thirty days, including on whichever
+    device the change was meant to shut out."""
+    return store.get_setting(PASSWORD_STAMP_KEY) or ""
+
+
+def password_ok(supplied):
+    """Does this password open the organiser side right now?
+
+    Three doors, tried in order:
+      1. ADMIN_PASSWORD_RESET in the environment -- the recovery path. Set it
+         on the host, log in with that value, and the stored hash is wiped so
+         a new password can be set. Remove the variable afterwards.
+      2. A password set from the site (stored as a hash).
+      3. The environment / local-file password, only while none has been set.
+    """
+    from werkzeug.security import check_password_hash
+    reset = os.environ.get("ADMIN_PASSWORD_RESET") or ""
+    if reset and hmac.compare_digest(supplied, reset):
+        store.set_setting(PASSWORD_HASH_KEY, None)
+        store.set_setting(PASSWORD_STAMP_KEY, _now_stamp())
+        return True
+    stored = store.get_setting(PASSWORD_HASH_KEY)
+    if stored:
+        return check_password_hash(stored, supplied)
+    return hmac.compare_digest(supplied, ADMIN_PASSWORD)
+
+
+def set_password(new):
+    """Store a new password. Never the password itself: a one-way hash, so
+    even someone with the database cannot read it back."""
+    from werkzeug.security import generate_password_hash
+    store.set_setting(PASSWORD_HASH_KEY, generate_password_hash(new))
+    stamp = _now_stamp()
+    store.set_setting(PASSWORD_STAMP_KEY, stamp)
+    return stamp
+
+
+def _now_stamp():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
 
 def is_admin():
-    return session.get("admin") is True
+    if session.get("admin") is not True:
+        return False
+    # A session from before the last password change is no longer good.
+    return session.get("pw_stamp", "") == password_stamp()
 
 
 def admin_required(view):
@@ -105,9 +161,10 @@ def login():
         # the only thing that grants access.
         if not name:
             error = "Enter your name"
-        elif hmac.compare_digest(supplied, ADMIN_PASSWORD):
+        elif password_ok(supplied):
             session["admin"] = True
             session["admin_name"] = name
+            session["pw_stamp"] = password_stamp()
             session.permanent = True
             # Claim today straight away, so coworkers ordering first thing see a
             # real name rather than "the organiser". Set-if-empty, so whoever
@@ -127,7 +184,40 @@ def login():
 def logout():
     session.pop("admin", None)
     session.pop("admin_name", None)
+    session.pop("pw_stamp", None)
     return redirect(url_for("index"))
+
+
+@app.route("/password", methods=["GET", "POST"])
+@admin_required
+def password():
+    """Change the organiser password from the site.
+
+    Current -> new -> new again. The current one proves you hold it, which is
+    what stops someone who found a logged-in phone from quietly locking the
+    real organiser out. The password itself is never shown anywhere.
+    """
+    error = done = None
+    if request.method == "POST":
+        current = request.form.get("current", "")
+        new = request.form.get("new", "")
+        again = request.form.get("again", "")
+        if not password_ok(current):
+            error = "That isn't the current password"
+        elif len(new) < MIN_PASSWORD_LENGTH:
+            error = f"Make the new one at least {MIN_PASSWORD_LENGTH} characters"
+        elif new != again:
+            error = "The two new passwords don't match"
+        elif new == current:
+            error = "That's the same as the current one"
+        else:
+            # Every other device is logged out by the new stamp; this one is
+            # given it, so whoever made the change stays in.
+            session["pw_stamp"] = set_password(new)
+            done = "Password changed. Every other device has been logged out."
+    return (render_template("password.html", error=error, done=done,
+                            name=session.get("admin_name", "")),
+            200 if not error else 400)
 
 
 # --- view models -----------------------------------------------------------
@@ -147,6 +237,9 @@ def public_view(day):
         "menu": menu_view(day["place"]),
         "orders": [{"name": o["name"],
                     "items": [i["desc"] for i in o["items"]],
+                    # Same rows with what to get if they're out of a drink.
+                    # Still no price anywhere in here.
+                    "rows": [item_public(i) for i in o["items"]],
                     "method": core.method_of(o),
                     "venmo_user": o.get("venmo_user", "")}
                    for o in day["orders"]],
@@ -178,9 +271,22 @@ def merge_suggestions(day):
     return sorted(out, key=lambda c: -c["total"])
 
 
+def item_public(item):
+    """One item row as the public page sees it: words only, never a price."""
+    row = {"desc": item["desc"], "drink": item.get("kind") == "drink"}
+    if item.get("fallback"):
+        row["fallback"] = item["fallback"]
+    return row
+
+
 def ordered_today(day):
-    """Today's item wordings with counts, commonest first, then alphabetical."""
-    counts = Counter(i["desc"] for o in day["orders"] for i in o["items"])
+    """Today's FOOD wordings with counts, commonest first, then alphabetical.
+
+    Drinks are left out on purpose: tapping a chip fills the lunch box, and
+    "Coke" in the lunch box is wrong.
+    """
+    counts = Counter(i["desc"] for o in day["orders"] for i in o["items"]
+                     if i.get("kind") != "drink")
     return [{"desc": desc, "count": n}
             for desc, n in sorted(counts.items(), key=lambda p: (-p[1], p[0].casefold()))]
 
@@ -216,7 +322,9 @@ def person_view(order, place):
         "name": order["name"],
         "items": [i["desc"] for i in order["items"]],
         "item_rows": [{"desc": i["desc"],
-                       "price": money(i["price_cents"]) if i["price_cents"] is not None else ""}
+                       "price": money(i["price_cents"]) if i["price_cents"] is not None else "",
+                       "drink": i.get("kind") == "drink",
+                       "fallback": i.get("fallback", "")}
                       for i in order["items"]],
         "subtotal": money(subtotal),
         "paid": money(paid) if paid is not None else None,
@@ -251,7 +359,7 @@ def admin_view(day):
         "suggestions": menu_suggestions(day["place"]),
         "people": [person_view(o, day["place"]) for o in day["orders"]],
         "groups": [{"desc": g["desc"], "count": g["count"], "names": g["names"],
-                    "mixed": g["mixed"],
+                    "mixed": g["mixed"], "drink": g["drink"], "fallbacks": g["fallbacks"],
                     "price": money(g["price_cents"]) if g["price_cents"] is not None else ""}
                    for g in groups],
         # Lines that look like one dish written several ways, for the merge
@@ -568,6 +676,10 @@ def api_public_order():
     desc = (body.get("item") or "").strip()
     method = body.get("method") or "cash"
     venmo_user = (body.get("venmo_user") or "").strip()
+    # A drink is optional, and can name what to get if they're out of it. A
+    # fallback with no drink means nothing and is dropped.
+    drink = (body.get("drink") or "").strip()
+    fallback = (body.get("drink_fallback") or "").strip() if drink else ""
 
     if not name:
         return jsonify({"error": "Enter your name"}), 400
@@ -620,11 +732,23 @@ def api_public_order():
             day["orders"].append(order)
         order["items"].append({"desc": desc,
                                "price_cents": _price_from(menus, day["place"], desc)})
+        # The drink is one more item row, added in this same locked write. As
+        # an item it is priced, counted and totalled exactly like food, which
+        # is right: it is a line on the receipt. No same-wording question for
+        # it -- drinks are short, and "Coke" vs "Coke Zero" already stay apart.
+        if drink:
+            row = {"desc": drink, "price_cents": _price_from(menus, day["place"], drink),
+                   "kind": "drink"}
+            if fallback:
+                row["fallback"] = fallback
+            order["items"].append(row)
         order["method"] = method
         if method == "venmo" and venmo_user:
             order["venmo_user"] = venmo_user
 
     store.learn_item(place, desc, None)
+    if drink:
+        store.learn_item(place, drink, None)
     return jsonify(public_view(store.load_day(day_date)))
 
 

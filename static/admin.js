@@ -205,6 +205,18 @@ async function removeMenuFile(id) {
 
 // --- render ---------------------------------------------------------------
 
+/* One item in words. A drink names what to get if they're out of it, so the
+   organiser sees it wherever the order is listed, not only on the call sheet. */
+function itemText(row) {
+  const alt = row.fallback ? ` (or ${row.fallback})` : "";
+  return row.desc + alt;
+}
+
+function itemsText(person) {
+  const rows = person.item_rows || person.items.map((desc) => ({ desc }));
+  return rows.map(itemText).join(", ") || "—";
+}
+
 function render() {
   const t = state.totals;
 
@@ -380,7 +392,7 @@ function renderPeople() {
 function personRow(person) {
   const row = el("div", "row " + statusClass(person));
   row.append(el("div", "who", person.name),
-             el("div", "what", person.items.join(", ") || "—"));
+             el("div", "what", itemsText(person)));
   row.append(paidField(person));
 
   const pencil = el("button", "x pencil", "✎");
@@ -479,7 +491,15 @@ function renderCall() {
   $("callList").replaceChildren(...(state.groups.length
     ? state.groups.map((g) => {
         const item = el("li");
-        item.append(el("div", "count", `${g.count}×`), el("div", null, g.desc));
+        const words = el("div");
+        words.append(el("span", null, g.desc));
+        // What to get if they're out: read to the restaurant with the order.
+        if (g.fallbacks && g.fallbacks.length) {
+          words.append(el("small", "fallbacks", "if they're out: "
+            + g.fallbacks.map((f) => `${f.desc}` + (f.count > 1 ? ` ×${f.count}` : ""))
+                         .join(", ")));
+        }
+        item.append(el("div", "count", `${g.count}×`), words);
         return item;
       })
     : [el("div", "empty", "Nothing ordered yet.")]));
@@ -493,7 +513,10 @@ function renderCall() {
 function callText() {
   const t = state.totals;
   return [`${state.place || "Lunch"} — ${date}`, "",
-          ...state.groups.map((g) => `${g.count}x ${g.desc}`), "",
+          ...state.groups.map((g) => `${g.count}x ${g.desc}`
+            + ((g.fallbacks && g.fallbacks.length)
+               ? `  (if out: ${g.fallbacks.map((f) => f.desc + (f.count > 1 ? ` x${f.count}` : "")).join(", ")})`
+               : "")), "",
           `Subtotal: $${t.items}`, `With tax:  $${t.bill}`].join("\n");
 }
 
@@ -743,7 +766,7 @@ function renderChange() {
 function changeRow(person) {
   const row = el("div", "row " + statusClass(person) + (person.change_given ? " done" : ""));
   row.append(el("div", "who", person.name),
-             el("div", "what", person.items.join(", ") || "—"));
+             el("div", "what", itemsText(person)));
 
   if (person.unpriced) {
     row.append(el("div", "chip a", "needs a price first"));

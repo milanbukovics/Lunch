@@ -150,6 +150,13 @@ function renderAlsoOrdered() {
   }));
 }
 
+/* One line for an item row. A drink says what to get if they're out of it;
+   the rule is stated on the form, so here it only needs the alternative. */
+function rowText(row) {
+  const alt = row.fallback ? ` · or ${row.fallback} if they're out` : "";
+  return (row.drink ? "Drink: " : "") + row.desc + alt;
+}
+
 /* Which row is currently asking "remove this?". Only one at a time, and it is
    cleared on every re-render so a poll or a new order never leaves a stray
    question open. */
@@ -183,11 +190,12 @@ function renderMine() {
     el("p", "mineSub", `${count}, ${paying}`));
 
   const nodes = [];
-  me.items.forEach((desc, index) => {
+  (me.rows || me.items.map((desc) => ({ desc }))).forEach((entry, index) => {
+    const desc = entry.desc;
     const asking = confirmingIndex === index;
     const row = el("div", "row mineRow" + (me.method === "venmo" ? " venmo" : "")
                           + (asking ? " asking" : ""));
-    row.append(el("div", "what", desc));
+    row.append(el("div", "what", rowText(entry)));
 
     if (state.locked) {
       nodes.push(row);
@@ -233,9 +241,9 @@ function renderEveryone() {
   const box = $("everyone");
   const rows = [];
   for (const order of state.orders) {
-    for (const desc of order.items) {
+    for (const entry of (order.rows || order.items.map((desc) => ({ desc })))) {
       const row = el("div", "row " + (order.method === "venmo" ? "venmo" : ""));
-      row.append(el("div", "who", order.name), el("div", "what", desc));
+      row.append(el("div", "who", order.name), el("div", "what", rowText(entry)));
       rows.push(row);
     }
   }
@@ -482,7 +490,9 @@ async function submitOrder(confirm, itemOk) {
   const item = $("pItem").value.trim();
   if (!name || !item) return;
 
-  const body = { name, item, method, venmo_user: $("pVenmo").value };
+  const body = { name, item, method, venmo_user: $("pVenmo").value,
+                 drink: $("pDrink").value.trim(),
+                 drink_fallback: $("pDrinkAlt").value.trim() };
   // Already ordered under this name in this sitting, so it is the same person
   // adding a second item -- don't make them confirm it again.
   if (confirm || orderedHere.has(name.toLowerCase())) body.confirm = "add";
@@ -495,6 +505,8 @@ async function submitOrder(confirm, itemOk) {
     orderedHere.add(name.toLowerCase());
     confirmingIndex = null;        // adding cancels any half-asked removal
     $("pItem").value = "";
+    $("pDrink").value = "";
+    $("pDrinkAlt").value = "";
     hideSamePrompt();
     $("nameHint").classList.add("hidden");
     render();

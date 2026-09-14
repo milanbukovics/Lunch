@@ -27,6 +27,7 @@ _meta = None
 _days = None
 _menus = None
 _files = None
+_settings = None
 _lock = threading.Lock()        # several requests can reach _connect() at once
 _write_lock = threading.Lock()  # serialises SQLite writes (see _write_txn)
 
@@ -44,7 +45,7 @@ def using_db():
 def _connect():
     """Build the engine and tables on first use, so the file backend never
     imports SQLAlchemy at all."""
-    global _engine, _meta, _days, _menus, _files
+    global _engine, _meta, _days, _menus, _files, _settings
     if _engine is not None:
         return _engine
 
@@ -84,19 +85,24 @@ def _connect():
                            Column("size", Integer, nullable=False),
                            Column("uploaded", String(32), nullable=False),
                            Column("data", LargeBinary, nullable=False))
+        # Small named values: today only the organiser password hash and when
+        # it last changed. create_all adds the table to an existing database.
+        settings = Table("settings", meta,
+                         Column("key", String(64), primary_key=True),
+                         Column("data", Text, nullable=False))   # "data": _upsert expects it
         meta.create_all(engine, checkfirst=True)
         # publish only once fully built, so no thread sees a half-set-up module
-        _meta, _days, _menus, _files, _engine = (meta, days, menus, menu_files,
-                                                 engine)
+        _meta, _days, _menus, _files, _settings, _engine = (
+            meta, days, menus, menu_files, settings, engine)
     return _engine
 
 
 def reset_for_tests():
     """Drop the cached engine so a test can point DATABASE_URL somewhere new."""
-    global _engine, _meta, _days, _menus, _files
+    global _engine, _meta, _days, _menus, _files, _settings
     if _engine is not None:
         _engine.dispose()
-    _engine = _meta = _days = _menus = _files = None
+    _engine = _meta = _days = _menus = _files = _settings = None
 
 
 def _tune_sqlite(engine):
@@ -439,3 +445,54 @@ def inherited_surcharge_pct(day_date, place):
             if pct is not None:
                 return float(round(pct, 3))
     return None
+
+
+# --- settings ----------------------------------------------------------------
+# A handful of named values. The organiser password hash lives here so it can
+# be changed from the site: the deployed password is otherwise an environment
+# variable, which the app cannot alter.
+
+SETTINGS_FILE_NAME = "settings.json"
+
+
+def _settings_path():
+    return core.DATA_DIR / SETTINGS_FILE_NAME
+
+
+def get_setting(key):
+    """The stored value, or None. Never raises for a missing key or table."""
+    if not using_db():
+        path = _settings_path()
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8")).get(key)
+
+    from sqlalchemy import select
+    engine = _connect()
+    with engine.connect() as conn:
+        row = conn.execute(select(_settings.c.data)
+                           .where(_settings.c.key == key)).fetchone()
+    return row[0] if row else None
+
+
+def set_setting(key, value):
+    """Store a value, or remove it when value is None."""
+    if not using_db():
+        path = _settings_path()
+        current = (json.loads(path.read_text(encoding="utf-8"))
+                   if path.exists() else {})
+        if value is None:
+            current.pop(key, None)
+        else:
+            current[key] = value
+        core.DATA_DIR.mkdir(exist_ok=True)
+        path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        return
+
+    from sqlalchemy import delete
+    _connect()
+    with _write_txn() as conn:
+        if value is None:
+            conn.execute(delete(_settings).where(_settings.c.key == key))
+        else:
+            _upsert(conn, _settings, _settings.c.key, key, value)

@@ -233,9 +233,20 @@ def group_items(day):
         for item in order["items"]:
             key = item["desc"].casefold()
             group = groups.setdefault(key, {"desc": item["desc"], "names": [],
-                                            "prices": set()})
+                                            "prices": set(), "fallbacks": {},
+                                            "drink": False})
             group["names"].append(order["name"])
             group["prices"].add(item["price_cents"])
+            # A drink can name what to get if they're out. Two people wanting
+            # a Coke with different backups still group as one "2x Coke" --
+            # the key stays the plain desc, because set_price_for_desc()
+            # matches on exactly that string -- and the call list lists the
+            # backups underneath.
+            if item.get("kind") == "drink":
+                group["drink"] = True
+                alt = (item.get("fallback") or "").strip()
+                if alt:
+                    group["fallbacks"][alt] = group["fallbacks"].get(alt, 0) + 1
 
     grouped = []
     for group in groups.values():
@@ -244,6 +255,9 @@ def group_items(day):
         # "mixed" means someone has an individual override -- don't silently pick one
         group["mixed"] = len(prices) > 1
         group["price_cents"] = prices.pop() if len(prices) == 1 else None
+        group["fallbacks"] = [{"desc": d, "count": n}
+                              for d, n in sorted(group["fallbacks"].items(),
+                                                 key=lambda p: (-p[1], p[0].casefold()))]
         grouped.append(group)
     return sorted(grouped, key=lambda g: g["desc"].casefold())
 

@@ -439,6 +439,16 @@ class Server:
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode("utf-8", "replace")
 
+    def form(self, path, op, **fields):
+        """A plain HTML form post; returns (status, body text)."""
+        data = urllib.parse.urlencode(fields).encode()
+        try:
+            with op.open(urllib.request.Request(self.base + path, data=data,
+                                                method="POST")) as r:
+                return r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode("utf-8", "replace")
+
 
 def test_web(srv, D):
     section("LOGGING IN CLAIMS TODAY")
@@ -467,8 +477,8 @@ def test_web(srv, D):
           not re.search(r'"(price|price_cents|owed|paid|paid_cents|subtotal'
                         r'|change|total|totals)"', raw))
     keys = sorted({k for o in payload["orders"] for k in o})
-    check("order keys are name/items/method/venmo_user",
-          keys == ["items", "method", "name", "venmo_user"], str(keys))
+    check("order keys are name/items/rows/method/venmo_user",
+          keys == ["items", "method", "name", "rows", "venmo_user"], str(keys))
     check("no menu suggestions handed to strangers",
           "suggestions" not in payload, str(sorted(payload)))
 
@@ -552,7 +562,7 @@ def test_web(srv, D):
     # the strongest signal that the block is theirs.
     check("the heading uses the name they typed", "Your order · ${me.name}" in block)
     check("item text still goes in through el(), never as markup",
-          'el("div", "what", desc)' in block)
+          'el("div", "what", rowText(entry))' in block)
 
     _, mine_html = srv.get("/")
     check("the block is a card of its own", 'id="mineCard"' in mine_html)
@@ -850,6 +860,141 @@ def test_no_drift():
               and t["keyed_items"] == sum(len(o["items"]) for o in day["orders"]))
 
 
+def test_drinks(srv, D):
+    """A drink is one more item row, carrying what to get if they're out."""
+    section("A DRINK, WITH WHAT TO GET INSTEAD")
+    day = core.shift_date(D, -40)
+    op = srv.user()
+    srv.login(op, "Milan")
+    srv.post("/api/place", op=op, date=day, place="Doner Shack")
+
+    code, pub = srv.post("/api/public/order", date=day, name="Ron",
+                         item="Rice plate with lamb", method="cash",
+                         drink="Coke", drink_fallback="Diet Coke")
+    check("food and drink land in one request", code == 200, f"HTTP {code}")
+    me = pub["orders"][0]
+    check("two item rows", len(me["items"]) == 2, str(me["items"]))
+    check("the drink row carries its backup",
+          me["rows"][1] == {"desc": "Coke", "drink": True, "fallback": "Diet Coke"},
+          str(me["rows"]))
+    check("the food row is plain",
+          me["rows"][0] == {"desc": "Rice plate with lamb", "drink": False})
+    check("the tap-to-match strip lists food only",
+          [e["desc"] for e in pub["ordered_today"]] == ["Rice plate with lamb"],
+          str(pub["ordered_today"]))
+    check("still no money anywhere in the public payload",
+          not any(w in json.dumps(pub).lower() for w in ("price", "paid", "owed", "cents")))
+
+    srv.post("/api/public/order", date=day, name="Deb", item="Veggie wrap",
+             method="cash", drink="Coke", drink_fallback="Sprite")
+    srv.post("/api/public/order", date=day, name="Ian", item="Doner wrap with lamb",
+             method="cash", drink="Coke")
+    srv.post("/api/public/order", date=day, name="Gina", item="Salad - no meat",
+             method="cash", drink="", drink_fallback="Sprite")
+    _, raw = srv.get(f"/api/day?date={day}", op=op)
+    state = json.loads(raw)
+    coke = next(g for g in state["groups"] if g["desc"] == "Coke")
+    check("three Cokes group as one line", coke["count"] == 3, str(coke["count"]))
+    check("  ...flagged as a drink", coke["drink"] is True)
+    check("  ...listing the distinct backups",
+          [(f["desc"], f["count"]) for f in coke["fallbacks"]]
+          == [("Diet Coke", 1), ("Sprite", 1)], str(coke["fallbacks"]))
+    gina = next(p for p in state["people"] if p["name"] == "Gina")
+    check("a backup with no drink is ignored", len(gina["items"]) == 1)
+    check("drinks count as items on the receipt check",
+          state["totals"]["keyed_items"] == 7, str(state["totals"]["keyed_items"]))
+
+    before = state["totals"]["items_cents"] if "items_cents" in state["totals"]         else int(round(float(state["totals"]["items"]) * 100))
+    srv.post("/api/price", op=op, date=day, desc="Coke", price="2.50")
+    _, raw = srv.get(f"/api/day?date={day}", op=op)
+    state = json.loads(raw)
+    after = int(round(float(state["totals"]["items"]) * 100))
+    # A delta, not an absolute: food may already carry a price remembered from
+    # an earlier test at this place, which is the remembered-price feature
+    # doing its job.
+    check("pricing the group prices every Coke", after - before == 750,
+          f"{before} -> {after}")
+    ron = next(p for p in state["people"] if p["name"] == "Ron")
+    check("the organiser sees the backup per person",
+          ron["item_rows"][1]["fallback"] == "Diet Coke", str(ron["item_rows"]))
+
+    # Neither available: the organiser removes it, and it leaves the numbers.
+    code, state = srv.post("/api/remove-item", op=op, date=day, name="Ron", index=1)
+    gone = after - int(round(float(state["totals"]["items"]) * 100))
+    check("removing a drink drops it from the count and the total",
+          state["totals"]["keyed_items"] == 6 and gone == 250,
+          f"{state['totals']['keyed_items']} items, ${gone/100:.2f} removed")
+
+    section("THE DRINK IS EXPLAINED ON THE FORM")
+    _, html = srv.get("/")
+    check("the rule is stated where the box is",
+          "out of both, you get no drink" in html)
+    check("both boxes exist", 'id="pDrink"' in html and 'id="pDrinkAlt"' in html)
+
+
+def test_password(srv, D):
+    """Change the password from the site. LAST: it changes the shared server's
+    password, and cleans up through the recovery path at the end."""
+    section("THE PASSWORD CAN BE CHANGED FROM THE SITE")
+    first = srv.user()
+    code, _ = srv.login(first, "Milan")             # env password, "pw"
+    check("the environment password works while none is set", code == 200)
+    probe = lambda op: srv.post("/api/lock", op=op, date=D, locked=False)[0]
+    check("  ...and the session is live", probe(first) == 200)
+
+    code, _ = srv.form("/password", srv.anon(), current="pw", new="a", again="a")
+    check("anonymous cannot change it", code == 403, f"HTTP {code}")
+
+    # A second device, logged in BEFORE the change.
+    second = srv.user()
+    srv.login(second, "Seth")
+    check("a second device is in too", probe(second) == 200)
+
+    code, body = srv.form("/password", first, current="wrong",
+                          new="lunchtime2026", again="lunchtime2026")
+    check("wrong current password refused", code == 400 and "current password" in body)
+    code, _ = srv.form("/password", first, current="pw", new="short", again="short")
+    check("seven characters refused", code == 400, f"HTTP {code}")
+    code, body = srv.form("/password", first, current="pw", new="lunchtime2026",
+                          again="different2026")
+    check("mismatched new passwords refused", code == 400 and "match" in body)
+    code, body = srv.form("/password", first, current="pw", new="lunchtime2026",
+                          again="lunchtime2026")
+    check("a proper change is accepted", code == 200 and "Password changed" in body)
+
+    stored = store.get_setting("admin_password_hash") or ""
+    check("stored as a hash, never the password itself",
+          stored.startswith("scrypt:") and "lunchtime2026" not in stored, stored[:24])
+    check("the device that changed it stays in", probe(first) == 200)
+    check("EVERY OTHER device is logged out", probe(second) == 403, f"HTTP {probe(second)}")
+
+    code, _ = srv.login(srv.user(), "Milan", "pw")
+    check("the old password is refused", code == 401, f"HTTP {code}")
+    fresh = srv.user()
+    code, _ = srv.login(fresh, "Milan", "lunchtime2026")
+    check("the new password works", code == 200 and probe(fresh) == 200)
+
+    _, page = srv.get("/password", op=fresh)
+    check("the page never shows a password",
+          "lunchtime2026" not in page and '"pw"' not in page)
+    _, admin = srv.get("/admin", op=fresh)
+    check("the organiser page links to it", 'href="/password"' in admin)
+
+    section("AND RECOVERED FROM THE HOST IF FORGOTTEN")
+    os.environ["ADMIN_PASSWORD_RESET"] = "rescue-me"
+    try:
+        code, _ = srv.login(srv.user(), "Milan", "rescue-me")
+        check("the reset value logs in while it is set", code == 200, f"HTTP {code}")
+        check("  ...and wipes the stored hash",
+              store.get_setting("admin_password_hash") is None)
+        code, _ = srv.login(srv.user(), "Milan", "pw")
+        check("  ...so the environment password works again", code == 200)
+    finally:
+        os.environ.pop("ADMIN_PASSWORD_RESET", None)
+    code, _ = srv.login(srv.user(), "Milan", "rescue-me")
+    check("the reset value is refused once the variable is gone", code == 401)
+
+
 def test_login_claims_day(srv, D):
     """Milan already claimed today by logging in during test_web."""
     section("A LATER ORGANISER CANNOT TAKE THE DAY OVER")
@@ -1120,8 +1265,10 @@ def main():
             test_same_name(srv, D)
             test_menu_files(srv, D)
             test_wording_prompt(srv, D)
+            test_drinks(srv, D)
             test_concurrency(srv, D)
-            test_login_claims_day(srv, D)   # last: it claims today
+            test_login_claims_day(srv, D)   # claims today
+            test_password(srv, D)           # LAST: changes the shared password
         finally:
             srv.stop()
         test_menu_files_on_disk()
