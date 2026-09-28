@@ -17,8 +17,8 @@ from collections import Counter
 from functools import wraps
 from urllib.parse import urlparse
 
-from flask import (Flask, Response, jsonify, redirect, render_template, request,
-                   session, url_for)
+from flask import (Flask, Response, jsonify, make_response, redirect, render_template,
+                   request, session, url_for)
 from flask.sessions import SecureCookieSessionInterface
 
 import lunchcore as core
@@ -179,8 +179,11 @@ def admin_required(view):
     return guarded
 
 
-NAME_COOKIE = "organiser_name"
-NAME_COOKIE_AGE = 365 * 24 * 3600
+# The login briefly remembered the organiser's name in this cookie. It no
+# longer does -- the name box starts empty on every load -- and any copy that
+# version left in a browser is deleted whenever the login page answers, so no
+# name lingers on a shared machine.
+OLD_NAME_COOKIE = "organiser_name"
 
 
 def _next_page():
@@ -195,10 +198,10 @@ def _next_page():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
-    # The name is remembered apart from the session, so on the odd occasion a
-    # login is needed again -- after a password change, say -- it is already
-    # filled in and only the password is asked for.
-    name = session.get("admin_name") or request.cookies.get(NAME_COOKIE, "")
+    # Empty on every load, a refresh included. The only name ever shown is the
+    # one typed a moment ago, after a wrong password, so a typo in the
+    # password doesn't mean typing the name again too.
+    name = ""
     if request.method == "POST":
         supplied = request.form.get("password", "")
         name = (request.form.get("name") or "").strip()
@@ -219,13 +222,14 @@ def login():
                 if not day.get("organiser"):
                     day["organiser"] = name
             response = redirect(_next_page())
-            response.set_cookie(NAME_COOKIE, name[:60], max_age=NAME_COOKIE_AGE,
-                                httponly=True, samesite="Lax", secure=request.is_secure)
+            response.delete_cookie(OLD_NAME_COOKIE)
             return response
         else:
             error = "Wrong password"
-    return (render_template("login.html", error=error, name=name),
-            200 if not error else 401)
+    response = make_response(render_template("login.html", error=error, name=name),
+                             200 if not error else 401)
+    response.delete_cookie(OLD_NAME_COOKIE)
+    return response
 
 
 @app.route("/logout", methods=["POST"])

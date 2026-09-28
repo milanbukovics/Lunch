@@ -1284,12 +1284,30 @@ def test_staying_logged_in(srv, D):
     check("with no SECRET_KEY set, sessions use the stored key",
           bare.secret_key == store.stable_secret("session_secret"))
 
-    section("THE NAME IS REMEMBERED, AND A LOGIN ONLY GOES HOME")
+    section("THE LOGIN STARTS EMPTY, AND A LOGIN ONLY GOES HOME")
+    # The user asked for this: the name box is empty on every load or refresh.
     op = srv.user()
     srv.login(op, "Seth")
+    _, page = srv.get("/login", op=op)
+    check("still logged in, a fresh login page has an empty name",
+          'value=""' in page and 'value="Seth"' not in page)
     srv.form("/logout", op)
     _, page = srv.get("/login", op=op)
-    check("logged out, the form still has the name in", 'value="Seth"' in page)
+    check("logged out, the same", 'value=""' in page and 'value="Seth"' not in page)
+    # The last version left the name in a year-long cookie.
+    request = urllib.request.Request(srv.base + "/login",
+                                     headers={"Cookie": "organiser_name=Seth"})
+    with srv.anon().open(request) as response:
+        page = response.read().decode("utf-8")
+        cleared = response.headers.get_all("Set-Cookie") or []
+    check("a name cookie left by the last version is ignored", 'value="Seth"' not in page)
+    check("  ...and deleted", any(c.startswith("organiser_name=;") and "Max-Age=0" in c
+                                  for c in cleared), str(cleared))
+    code, page = srv.login(srv.user(), "Seth", "not the password")
+    check("after a wrong password, the name just typed stays",
+          code == 401 and 'value="Seth"' in page, f"HTTP {code}")
+    check("the browser is asked not to autofill the name",
+          re.search(r'name="name"[^>]*autocomplete="off"', page) is not None)
 
     class _Stay(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
