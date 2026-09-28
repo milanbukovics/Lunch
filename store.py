@@ -85,8 +85,9 @@ def _connect():
                            Column("size", Integer, nullable=False),
                            Column("uploaded", String(32), nullable=False),
                            Column("data", LargeBinary, nullable=False))
-        # Small named values: today only the organiser password hash and when
-        # it last changed. create_all adds the table to an existing database.
+        # Small named values: the organiser password hash, when it last
+        # changed, and a session key if the host never set one. create_all
+        # adds the table to an existing database.
         settings = Table("settings", meta,
                          Column("key", String(64), primary_key=True),
                          Column("data", Text, nullable=False))   # "data": _upsert expects it
@@ -199,6 +200,7 @@ def _normalise(day, day_date):
     day.setdefault("receipt_subtotal_cents", None)
     day.setdefault("receipt_items", None)
     day.setdefault("surcharge_pct", None)
+    day.setdefault("tax_included", None)
     return day
 
 
@@ -427,12 +429,9 @@ def inherited_restaurant_method(day_date):
     return "cash"
 
 
-def inherited_surcharge_pct(day_date, place):
-    """Same rule as lunchcore's, but reading from the active backend.
-
-    Matched on place: one restaurant charges 3% for a card and the next
-    charges nothing, so the figure has to follow the restaurant.
-    """
+def _last_at_place(day_date, place, pick):
+    """`pick(day)` from the newest day at this restaurant, on or before this
+    one, where it says anything. None if no such day does."""
     if not place:
         return None
     wanted = place.strip().casefold()
@@ -441,10 +440,30 @@ def inherited_surcharge_pct(day_date, place):
             day = load_day(saved)
             if (day.get("place") or "").strip().casefold() != wanted:
                 continue
-            pct = core.surcharge_of(day)
-            if pct is not None:
-                return float(round(pct, 3))
+            value = pick(day)
+            if value is not None:
+                return value
     return None
+
+
+def inherited_surcharge_pct(day_date, place):
+    """Same rule as lunchcore's, but reading from the active backend.
+
+    Matched on place: one restaurant charges 3% for a card and the next
+    charges nothing, so the figure has to follow the restaurant.
+    """
+    pct = _last_at_place(day_date, place, core.surcharge_of)
+    return None if pct is None else float(round(pct, 3))
+
+
+def inherited_tax_included(day_date, place):
+    """Whether this restaurant's prices already include tax, as last set.
+
+    A fact about the restaurant, not the day -- Doner Shack's prices include
+    it and most places add it on top -- so it follows the place exactly the
+    way the surcharge does, and is set once rather than every visit.
+    """
+    return _last_at_place(day_date, place, lambda day: day.get("tax_included"))
 
 
 # --- settings ----------------------------------------------------------------
@@ -496,3 +515,45 @@ def set_setting(key, value):
             conn.execute(delete(_settings).where(_settings.c.key == key))
         else:
             _upsert(conn, _settings, _settings.c.key, key, value)
+
+
+def stable_secret(key):
+    """A random value made once and then kept, for as long as the store lasts.
+
+    Insert-if-absent, then read back, so two worker processes starting at the
+    same moment both end up holding whichever one landed first -- never one
+    each, which would make every login work on one worker and fail on the
+    other.
+    """
+    candidate = secrets.token_hex(32)
+    if not using_db():
+        with _write_lock:
+            stored = get_setting(key)
+            if stored:
+                return stored
+            set_setting(key, candidate)
+            return candidate
+
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    _connect()
+    with _write_txn() as conn:
+        dialect = conn.dialect.name
+        if dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+        elif dialect in ("postgresql", "postgres"):
+            from sqlalchemy.dialects.postgresql import insert
+        else:
+            insert = None
+        if insert is not None:
+            conn.execute(insert(_settings).values(key=key, data=candidate)
+                         .on_conflict_do_nothing(index_elements=[_settings.c.key]))
+        else:                                   # portable fallback
+            try:
+                with conn.begin_nested():
+                    conn.execute(_settings.insert().values(key=key, data=candidate))
+            except IntegrityError:
+                pass
+        row = conn.execute(select(_settings.c.data)
+                           .where(_settings.c.key == key)).first()
+    return row[0]

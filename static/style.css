@@ -150,8 +150,9 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .money { position: relative; }
 .money i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
            color: var(--muted); font-style: normal; }
-/* Same specificity trap as .editPrice below: keep this at class+class so a
-   padding shorthand elsewhere cannot push the text back under the "$". */
+/* Keep this at class+class: a padding shorthand elsewhere (".f input",
+   ".editForm input") scores class+element and would otherwise push the text
+   back under the "$". */
 .money input, .money.money input { padding-left: 25px; width: 150px;
                                    font-variant-numeric: tabular-nums; }
 
@@ -160,6 +161,20 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
   padding: 12px 24px; font-weight: 650; cursor: pointer; transition: background .15s;
 }
 .primary:hover { background: var(--accent-dark); }
+
+/* A secondary action: tinted, rather than the browser's own grey button --
+   which is what "Add link" was, since .ghost is only styled in the top bar.
+   Same padding as the inputs plus a transparent border, so it stands exactly
+   as tall as the box beside it. */
+.soft {
+  font: inherit; font-weight: 650; cursor: pointer;
+  padding: 11px 18px; border-radius: 10px; border: 1.5px solid transparent;
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+  transition: background .15s, border-color .15s;
+}
+.soft:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.soft:focus-visible { outline: 0; border-color: var(--accent); }
+.soft.small { padding: 7px 12px; font-size: 13.5px; }
 
 /* --- tally + lists ------------------------------------------------------ */
 
@@ -184,7 +199,7 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 .row.done   { opacity: .5; }
 
 .who { font-weight: 650; min-width: 110px; }
-.what { color: var(--muted); flex: 1 1 200px; }
+.what { color: var(--muted); flex: 1 1 160px; }
 .chip {
   font-size: 12.5px; font-weight: 650; padding: 4px 11px; border-radius: 20px;
   background: var(--bg); border: 1px solid var(--line); white-space: nowrap;
@@ -234,6 +249,9 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
   transition: background .12s, color .12s;
 }
 .tog:hover { color: var(--text); }
+/* Beside a full-height input the toggle stands as tall, so the labels above
+   the two line up instead of the toggle's sitting lower. */
+.entry .tog, .receiptCheck .tog { padding: 10px 14px; }
 .tog.on.cash  { background: var(--green); color: #fff; }
 .tog.on.venmo { background: #3d95ce; color: #fff; }   /* Venmo blue */
 
@@ -242,6 +260,7 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 
 /* --- row editor --------------------------------------------------------- */
 
+.rowActions { display: flex; gap: 2px; margin-left: auto; }
 .x.pencil { font-size: 15px; }
 .x.pencil:hover { background: color-mix(in srgb, var(--accent) 12%, transparent);
                   color: var(--accent); }
@@ -263,13 +282,12 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .editName, .editDesc { flex: 1 1 auto; min-width: 0; }
-/* input.editPrice, not .editPrice: ".editForm input" above sets the padding
-   shorthand and scores class+element, which beats a lone class -- the left
-   padding got reset to 12px and the placeholder rendered under the "$". */
-.editForm input.editPrice {
-  width: 118px; padding-left: 24px; font-variant-numeric: tabular-nums;
-}
+/* The backup sits beside the wording, a little narrower: it is the lesser of
+   the two. input.editAlt, not .editAlt, to outscore ".editForm input". */
+.editForm input.editAlt { flex: 0 1 34%; min-width: 0; }
+.editOr { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .editItems { display: flex; flex-direction: column; gap: 9px; }
+.editAdders { display: flex; gap: 18px; }
 
 .linkBtn {
   align-self: flex-start; background: none; border: 0; color: var(--accent);
@@ -342,6 +360,9 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
 /* Checked and correct is green; checked and wrong is red. Amber is neither --
    it means a comparison has not run yet, so nothing has been confirmed. */
 .verdict.a { color: var(--amber); }
+.verdict .soft { margin-left: 10px; }
+
+.tog.on.tax { background: var(--accent); color: #fff; }
 
 /* --- cash bar ----------------------------------------------------------- */
 
@@ -354,10 +375,13 @@ main { max-width: 940px; margin: 0 auto; padding: 22px 20px 130px; }
             font-variant-numeric: tabular-nums; }
 .cashline.g { color: var(--green); font-weight: 650; }
 .cashline.r { color: var(--red); font-weight: 650; }
-.verdictBig { max-width: 940px; margin: 4px auto 0; font-size: 16px; font-weight: 700;
+.verdictBig { max-width: 940px; margin: 4px auto 0; font-size: 17px; font-weight: 700;
               font-variant-numeric: tabular-nums; }
 .verdictBig.g { color: var(--green); }
 .verdictBig.r { color: var(--red); }
+.verdictBig.a { color: var(--amber); }
+/* The sum under the headline: the figures it is made of, readable at a glance. */
+.cashline.barMath { color: var(--text); }
 
 /* --- calendar ----------------------------------------------------------- */
 
@@ -542,14 +566,40 @@ body.noScroll { overflow: hidden; }
 .alsoChip i { font-style: normal; font-weight: 700; color: var(--muted); }
 .alsoChip:hover i { color: var(--accent); }
 
-/* Drink and its backup, side by side where there's room. The hint spans both
-   so the rule -- second choice if they're out, nothing if they're out of both
-   -- is read once, not per box. */
-.drinkPair { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 15px; }
-.drinkPair .f { flex: 1 1 200px; margin-bottom: 0; }
-.drinkPair .f > span small { font-weight: 500; text-transform: none; letter-spacing: 0;
-                             margin-left: 4px; }
-.drinkNote { width: 100%; margin: -4px 0 0; }
+/* One thing per line, each with its own optional backup (lines.js). The
+   backup hangs off its item behind a rule, so it reads as belonging to that
+   line -- and food and drink each visibly get their own. */
+.itemLines { display: flex; flex-direction: column; gap: 10px; }
+.itemLine {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px 8px; align-items: center;
+}
+.lineNo { color: var(--muted); font-size: 12.5px; font-weight: 700; text-align: right;
+          font-variant-numeric: tabular-nums; }
+.lineBackup {
+  grid-column: 2; display: flex; align-items: center; gap: 10px;
+  margin-left: 14px; padding-left: 12px; border-left: 2px solid var(--line);
+}
+.lineBackup > span { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.f .lineBackup input {
+  flex: 1 1 0; min-width: 0; width: auto;
+  padding: 8px 11px; font-size: 14px; background: var(--surface);
+}
+/* The line a "same dish?" question is about. */
+.itemLine.lineAsk .lineItem {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+.lineNote { margin: 2px 2px 0; }
+.f > span small { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 4px; }
+
+/* The organiser's form: lines take a row of their own, and on a wide screen
+   each backup sits beside its item rather than under it. */
+.orderEntry .f.full { flex: 1 1 100%; }
+@media (min-width: 720px) {
+  .wideLines .itemLine { grid-template-columns: 18px minmax(0, 3fr) minmax(0, 2fr); }
+  .wideLines .lineBackup { grid-column: auto; margin-left: 0; }
+}
 
 /* The backups under a drink line on the call sheet. */
 .callList .fallbacks { display: block; margin-top: 3px; color: var(--muted); font-size: 12.5px; }
@@ -599,6 +649,20 @@ body.noScroll { overflow: hidden; }
 .venmoBtn:hover { background: #327bab; }
 .venmoBtn.ghostBtn { background: none; color: var(--muted); border: 1.5px dashed var(--line); }
 .venmoBtn.ghostBtn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* "Paid $2 in cash" / "Paid $2 on Venmo", in each way's own colour. */
+.settleBtns { display: flex; flex-wrap: wrap; gap: 8px; }
+.soft.settle.cash { color: var(--green); background: color-mix(in srgb, var(--green) 13%, transparent); }
+.soft.settle.cash:hover { background: color-mix(in srgb, var(--green) 22%, transparent); }
+.soft.settle.venmo { color: #3d95ce; background: color-mix(in srgb, #3d95ce 14%, transparent); }
+.soft.settle.venmo:hover { background: color-mix(in srgb, #3d95ce 24%, transparent); }
+
+/* A later payment made the other way, with its own undo. */
+.chip.topup { display: inline-flex; align-items: center; gap: 2px; padding-right: 3px;
+              border-color: transparent; }
+.chip.topup.cash { background: var(--green-bg); color: var(--green); }
+.chip.topup.venmo { background: color-mix(in srgb, #3d95ce 14%, transparent); color: #3d95ce; }
+.chip.topup .x { font-size: 15px; padding: 0 5px; color: inherit; }
 
 .linkGhost { text-decoration: none; display: inline-block; }
 .topbar .quit form { margin: 0; }

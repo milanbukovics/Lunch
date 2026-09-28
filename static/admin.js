@@ -237,9 +237,15 @@ function render() {
                                 ? " on " + state.restaurant_method : "");
   }
   $("handedField").classList.toggle("hidden", byCard);
+  // A card fee is only ever charged on a card, so the box goes with the choice.
+  $("surchargeField").classList.toggle("hidden", !byCard);
   // Named for what left your pocket, not "receipt total" -- a receipt carries
   // several numbers and this is specifically the one that hit your account.
   $("receiptLabel").textContent = byCard ? "Charged to card" : "Total you paid";
+  for (const button of $("taxMode").children) {
+    const on = (button.dataset.tax === "in") === state.tax_included;
+    button.className = "tog" + (on ? " on tax" : "");
+  }
 
   $("lockBtn").textContent = state.locked ? "Reopen orders" : "Close orders";
   $("lockBtn").classList.toggle("locked", state.locked);
@@ -252,9 +258,9 @@ function render() {
   }));
 
   $("priceBadge").textContent = t.unpriced ? String(t.unpriced) : "";
-  const owedCount = state.people.filter(
-    (p) => p.status === "paid" && p.change !== "0.00" && !p.change_given).length;
-  $("changeBadge").textContent = owedCount ? String(owedCount) : "";
+  // Things still to do in step 4: money to collect, and change to hand back.
+  const toDo = state.people.filter((p) => owesYou(p) || changeDue(p)).length;
+  $("changeBadge").textContent = toDo ? String(toDo) : "";
 
   renderMenuAdmin();
   renderTally();
@@ -266,58 +272,69 @@ function render() {
   renderCashBar(t);
 }
 
-/* Paying by card asks a different question than paying by cash: not "do I have
-   enough bills?" but "am I square once the card is charged?" */
+/* One answer first: are you ahead or behind, all money counted?
+
+   This used to open with the CASH line, which on 23 Sept read "SHORT $14.87
+   of your own money" in red above a green "NET surplus $5.13" -- two verdicts
+   that looked like they disagreed. Both were true: the cash after change was
+   $14.87 short at the till, and the $20 that came in on Venmo covered it. So
+   the net is the headline now, the sum that makes it sits under it, and the
+   till shortfall is a note explaining where it went. */
 function renderCashBar(t) {
-  $("cashLine").textContent =
-    `${t.people} people · ${t.unpaid} unpaid · items $${t.items} · ` +
-    (t.has_receipt ? `receipt $${t.due}` : `estimated bill $${t.bill}`);
+  $("barFacts").textContent =
+    `${t.people} people · ${t.unpaid} unpaid · items $${t.items}` +
+    (t.has_receipt ? ` · ${t.by_card ? "charged" : "receipt"} $${t.due}` : "");
 
-  const label = t.has_receipt ? "receipt" : "bill";
-  const main = $("cashRow");
-  const venmo = $("venmoRow");
-  const net = $("netRow");
+  const verdict = $("barVerdict");
+  const sum = $("barMath");
+  const notes = $("barNotes");
 
-  if (t.by_card) {
-    main.className = "verdictBig";
-    main.textContent =
-      `COLLECTED  $${t.collected}  (cash $${t.cash_in} · Venmo $${t.venmo_in})` +
-      (t.change_out !== "0.00" ? `  ·  $${t.change_out} to return` : "");
-    venmo.className = "cashline";
-    venmo.textContent = `CARD  $${t.due} charged` +
-      (t.has_receipt ? "" : `  (estimated — no receipt entered yet)`);
-  } else {
-    if (t.cash_short_cents > 0) {
-      main.className = "verdictBig r";
-      main.textContent =
-        `CASH  in $${t.cash_in} · change out $${t.cash_change} · on hand $${t.cash_on_hand}` +
-        ` · ${label} $${t.due}  →  ⚠ SHORT $${t.cash_short} of your own money`;
-    } else {
-      main.className = "verdictBig g";
-      main.textContent =
-        `CASH  in $${t.cash_in} · change out $${t.cash_change} · on hand $${t.cash_on_hand}` +
-        ` · ${label} $${t.due}  →  $${t.pocket} left after paying`;
-    }
-    venmo.className = "cashline" + (t.any_venmo ? "" : " hidden");
-    venmo.textContent = `VENMO  in $${t.venmo_in}` +
-      (t.venmo_change !== "0.00" ? ` · $${t.venmo_change} to send back`
-                                 : " · nothing to send back");
+  if (!t.people) {
+    verdict.className = "verdictBig";
+    verdict.textContent = "No orders yet";
+    sum.textContent = "";
+    notes.className = "cashline hidden";
+    return;
   }
-
   if (t.unpriced) {
-    net.className = "cashline";
-    net.textContent =
-      `${t.unpriced} item${t.unpriced > 1 ? "s" : ""} still unpriced — these totals are incomplete`;
-  } else if (t.by_card) {
-    net.className = "cashline " + (t.pocket_short ? "r" : "g");
-    net.textContent = `NET  ` + (t.pocket_short
-      ? `you are down $${t.pocket_abs} of your own money`
-      : `$${t.pocket_abs} in your favour (cash $${t.cash_on_hand} + Venmo $${t.venmo_held})`);
-  } else {
-    net.className = "cashline " + (t.net_short ? "r" : "g");
-    net.textContent = `NET  ` +
-      (t.net_short ? `short $${t.net_surplus} overall` : `surplus $${t.net_surplus} overall`);
+    verdict.className = "verdictBig a";
+    verdict.textContent = `Not final yet — ${t.unpriced} item${t.unpriced > 1 ? "s" : ""}`
+      + ` still need${t.unpriced > 1 ? "" : "s"} a price (step 3)`;
+    sum.textContent = "";
+    notes.className = "cashline hidden";
+    return;
   }
+
+  const amount = `$${t.net_surplus}`;
+  verdict.className = "verdictBig" + (t.net_zero ? "" : t.net_short ? " r" : " g");
+  verdict.textContent = t.net_zero ? "You're exactly even"
+    : `${t.has_receipt ? "You're" : "About"} ${amount} ${t.net_short ? "behind" : "ahead"}`
+      + (t.has_receipt ? "" : " — an estimate until you type the receipt");
+
+  // The sum behind the headline, pot by pot, in the order the money moved.
+  const paidOut = !t.has_receipt ? "estimated bill"
+                : t.by_card ? "charged to your card" : "receipt";
+  sum.textContent =
+    `$${t.cash_on_hand} cash` + (t.cash_change !== "0.00" ? ` (after $${t.cash_change} change)` : "")
+    + ` + $${t.venmo_held} Venmo`
+    + (t.venmo_change !== "0.00" ? ` (after $${t.venmo_change} sent back)` : "")
+    + ` − $${t.due} ${paidOut} = ${t.net_short ? "−" : ""}${amount}`;
+
+  const lines = [];
+  if (!t.by_card && t.cash_short_cents > 0) {
+    lines.push(t.has_receipt
+      ? `At the till your cash was $${t.cash_short} short, so that came out of your own pocket`
+        + (!t.net_short && t.any_venmo ? " — the Venmo money pays it back." : ".")
+      : `The cash is about $${t.cash_short} short of the bill — bring that much of your own.`);
+  }
+  if (t.owing) {
+    lines.push(`${t.owing} ${t.owing === 1 ? "person still owes" : "people still owe"} you`
+      + ` $${t.outstanding} (step 4)`
+      + (t.net_short ? ` — once paid you'll be $${t.after_collect}`
+                       + ` ${t.after_short ? "behind" : "ahead"}` : ""));
+  }
+  notes.textContent = lines.join("  ·  ");
+  notes.className = "cashline" + (lines.length ? "" : " hidden");
 }
 
 function renderTally() {
@@ -333,6 +350,27 @@ function statusClass(person) {
   const base = person.unpriced ? "needs" : person.status === "short" ? "short"
              : person.status === "paid" ? "paid" : "";
   return base + (person.method === "venmo" ? " venmo" : "");
+}
+
+// Priced, and has paid nothing or not enough.
+const owesYou = (p) => !p.unpriced && (p.status === "unpaid" || p.status === "short");
+// Paid more than they owe, and the change hasn't gone back yet.
+const changeDue = (p) => p.status === "paid" && p.change !== "0.00" && !p.change_given;
+
+/* Payments made later and the other way -- $15 cash at lunch, the last $2 on
+   Venmo that evening. Each can be undone on its own, e.g. a mis-tap. */
+function topupChips(person) {
+  return (person.topups || []).map((payment, index) => {
+    const chip = el("span", "chip topup " + payment.method,
+                    `+ $${payment.amount} ${payment.method === "venmo" ? "Venmo" : "cash"}`);
+    const undo = el("button", "x", "×");
+    undo.type = "button";
+    undo.title = "Undo this payment";
+    undo.onclick = () => send("/api/remove-topup", { name: person.name, index },
+                              `Removed ${person.name}'s $${payment.amount}`);
+    chip.append(undo);
+    return chip;
+  });
 }
 
 /* Cash/Venmo box that edits in place -- for people who pay after their order is
@@ -359,7 +397,8 @@ function paidField(person) {
   money.append(input);
   wrap.append(money, methodToggle(person.method, (m) =>
     send("/api/method", { name: person.name, method: m },
-         `${person.name} → ${m === "venmo" ? "Venmo" : "cash"}`)));
+         `${person.name} → ${m === "venmo" ? "Venmo" : "cash"}`)),
+    ...topupChips(person));   // later payments sit with the first one
   return wrap;
 }
 
@@ -398,7 +437,6 @@ function personRow(person) {
   const pencil = el("button", "x pencil", "✎");
   pencil.title = `Edit ${person.name}'s order`;
   pencil.onclick = () => { editing = person.name; renderPeople(); };
-  row.append(pencil);
 
   const remove = el("button", "x", "×");
   remove.title = `Remove ${person.name}`;
@@ -407,7 +445,10 @@ function personRow(person) {
         !confirm(`${person.name} already gave you $${person.paid}. Remove them anyway?`)) return;
     send("/api/delete-person", { name: person.name }, `Removed ${person.name}`);
   };
-  row.append(remove);
+  // Kept together, so a crowded row never strands one of them on a line alone.
+  const actions = el("div", "rowActions");
+  actions.append(pencil, remove);
+  row.append(actions);
   return row;
 }
 
@@ -424,40 +465,54 @@ function editPanel(person) {
   nameRow.append(nameInput);
   form.append(nameRow);
 
+  /* Wording and backup only. There used to be a price box here too, with
+     "later" as its placeholder, and nobody could tell what it was for --
+     prices are typed once, in step 3. The server keeps each line's price. */
   const itemBox = el("div", "editItems");
-  const addItemRow = (desc = "", price = "") => {
+  const addLine = (row = {}) => {
+    const drink = Boolean(row.drink);
     const line = el("div", "editLine");
-    line.append(el("span", "editLabel", "Item"));
+    line.dataset.kind = drink ? "drink" : "";
+    line.append(el("span", "editLabel", drink ? "Drink" : "Item"));
     const descInput = el("input", "editDesc");
-    descInput.value = desc;
+    descInput.value = row.desc || "";
     descInput.setAttribute("list", "menuList");
-    const money = el("div", "money");
-    money.append(el("i", null, "$"));
-    const priceInput = el("input", "editPrice");
-    priceInput.value = price;
-    priceInput.placeholder = "later";
-    priceInput.inputMode = "decimal";
-    money.append(priceInput);
+    const altInput = el("input", "editAlt");
+    altInput.value = row.fallback || "";
+    altInput.placeholder = "backup (optional)";
+    altInput.setAttribute("list", "menuList");
+    altInput.setAttribute("aria-label", "If they're out");
     const drop = el("button", "x", "×");
-    drop.title = "Remove this item";
+    drop.type = "button";
+    drop.title = drink ? "Remove this drink" : "Remove this item";
     drop.onclick = () => line.remove();
-    line.append(descInput, money, drop);
+    // Labelled, so a filled-in backup never reads as a second item.
+    line.append(descInput, el("span", "editOr", "if out"), altInput, drop);
     itemBox.append(line);
     return descInput;
   };
-  for (const item of person.item_rows) addItemRow(item.desc, item.price);
-  if (!person.item_rows.length) addItemRow();
+  for (const row of person.item_rows) addLine(row);
+  if (!person.item_rows.length) addLine();
   form.append(itemBox);
 
-  const add = el("button", "linkBtn", "+ add item");
-  add.onclick = () => addItemRow().focus();
-  form.append(add);
+  const adders = el("div", "editAdders");
+  const addItem = el("button", "linkBtn", "+ add item");
+  addItem.type = "button";
+  addItem.onclick = () => addLine().focus();
+  const addDrink = el("button", "linkBtn", "+ add drink");
+  addDrink.type = "button";
+  addDrink.onclick = () => addLine({ drink: true }).focus();
+  adders.append(addItem, addDrink);
+  form.append(adders);
 
   const close = () => { editing = null; renderPeople(); };
   const save = () => {
+    // kind travels with each line: without it a drink came back as food, and
+    // its backup was lost, every time an order was edited.
     const items = [...itemBox.querySelectorAll(".editLine")].map((line) => ({
       desc: line.querySelector(".editDesc").value,
-      price: line.querySelector(".editPrice").value,
+      fallback: line.querySelector(".editAlt").value,
+      kind: line.dataset.kind === "drink" ? "drink" : undefined,
     }));
     send("/api/edit-person",
          { name: person.name, new_name: nameInput.value, items },
@@ -504,10 +559,16 @@ function renderCall() {
       })
     : [el("div", "empty", "Nothing ordered yet.")]));
 
+  // What the till should come to: tax on top unless this place's prices
+  // already include it, and the card fee only when paying by card.
   const t = state.totals;
-  $("callTotals").innerHTML =
-    `Subtotal <b>$${t.items}</b> &nbsp;·&nbsp; with tax <b>$${t.bill}</b>` +
-    (t.unpriced ? ` &nbsp;·&nbsp; ${t.unpriced} item(s) unpriced, so this is incomplete` : "");
+  const totals = $("callTotals");
+  totals.replaceChildren("Subtotal ", el("b", null, `$${t.items}`),
+                         " · expected ", el("b", null, `$${t.estimate}`),
+                         ` (${t.charge_basis})`);
+  if (t.unpriced) {
+    totals.append(` · ${t.unpriced} item(s) unpriced, so this is incomplete`);
+  }
 }
 
 function callText() {
@@ -517,7 +578,7 @@ function callText() {
             + ((g.fallbacks && g.fallbacks.length)
                ? `  (if out: ${g.fallbacks.map((f) => f.desc + (f.count > 1 ? ` x${f.count}` : "")).join(", ")})`
                : "")), "",
-          `Subtotal: $${t.items}`, `With tax:  $${t.bill}`].join("\n");
+          `Subtotal: $${t.items}`, `Expected: $${t.estimate} (${t.charge_basis})`].join("\n");
 }
 
 function renderPrices() {
@@ -590,15 +651,12 @@ function renderMergeOffers() {
 
 /* Does the order match the receipt?
 
-   This used to compare the typed total against bill_cents -- items plus 4.712%
-   GET -- but a receipt total is whatever the restaurant charged. Doner Shack
-   prices include tax and add 3% for the card, so the two could never agree:
-   on 28 Aug it read "off by $23.50" on a day a flawless order would still have
-   read "off by $3.87". Permanently red means ignored, and a missing plate went
-   through. So compare like with like instead -- untaxed items against the
-   receipt's own subtotal, and a plain count of things -- which reads zero when
-   the order is actually right. The old estimate is still shown when no
-   subtotal has been typed, so older days behave as before. */
+   The till is modelled forwards on the server -- food, then 4.712% tax unless
+   this place's prices already include it, then the card fee when the card
+   paid -- and the sum is shown, so a match or a gap can be followed by eye.
+   The first version assumed Doner Shack's model everywhere (tax already in the
+   prices), so at every place that adds tax on top a correct receipt read "the
+   fee looks like 4.7%" and could never go green. */
 function checkReceipt() {
   const verdict = $("receiptVerdict");
   const t = state.totals;
@@ -609,45 +667,54 @@ function checkReceipt() {
     verdict.className = "verdict r"; verdict.textContent = "not a number";
     return;
   }
+  if (!has(t.expected_charge)) {
+    verdict.className = "verdict"; verdict.textContent = "";
+    return;
+  }
 
-  const has = (v) => v !== null && v !== undefined;
   const parts = [];
+  let offer = null;
   const countWrong = has(t.count_diff) && t.count_diff !== 0;
-  const moneyWrong = has(t.charge_diff_cents) && t.charge_diff_cents !== 0;
+  const moneyWrong = has(t.charge_diff_cents) && !t.charge_ok;
 
   /* Two things can go wrong and they want different answers, so say which.
-     The item count is what tells them apart now that the subtotal box is gone:
-     if the receipt lists a different NUMBER of things, something was never rung
-     up and it is the order. If it lists the right number for the wrong money,
-     the order was fine and it is a price or the fee. */
+     If the receipt lists a different NUMBER of things, something was never
+     rung up and it is the order. If it lists the right number for the wrong
+     money, the order was fine and it is a price, the tax or the fee. */
   if (countWrong) {
     parts.push(`${t.keyed_items} keyed, ${t.receipt_items_count} on the receipt`);
   } else if (has(t.count_diff)) {
     parts.push(`${t.keyed_items} items`);
   }
+  if (t.unpriced) parts.push(`${t.unpriced} still unpriced`);
+
+  // The sum the till should have done.
+  const sum = `$${t.items}` + (t.tax_on_top ? ` + $${t.tax_part} tax` : "")
+    + (t.fee_part ? ` + $${t.fee_part} card fee` : "") + ` = $${t.expected_charge}`;
 
   if (moneyWrong) {
-    // In food terms: the raw gap carries the fee charged on the discrepancy,
-    // and only the food figure matches a price on the menu.
-    parts.push(`$${t.food_diff} ${t.food_diff_cents > 0 ? "more" : "less"} than your orders`);
-    if (!countWrong && has(t.implied_pct)) {
-      parts.push(t.implied_pct >= 0
-        ? `the fee looks like ${t.implied_pct}%, not the usual ${t.expected_pct}%`
-        : `charged less than the food alone — check the prices`);
+    parts.push(`charged $${t.charge_diff} ${t.charge_diff_cents > 0 ? "more" : "less"}`
+               + ` than ${sum}`);
+    if (!countWrong && t.tax_switch) {
+      // The other tax setting would explain it exactly. Offered, never
+      // assumed: guessing could hide a missing item that costs about 4.7%.
+      offer = el("button", "soft small", t.tax_on_top ? "Their prices already include tax"
+                                                      : "They add tax on top");
+      offer.type = "button";
+      offer.onclick = () => send("/api/receipt", { tax_included: t.tax_on_top },
+        `Remembered for ${state.place || "this place"}`);
+    } else if (!countWrong && t.by_card && has(t.implied_pct) && t.implied_pct > 0) {
+      parts.push(`the card fee looks like ${t.implied_pct}%`
+                 + (has(t.expected_pct) ? `, not ${t.expected_pct}%` : ""));
+    } else if (!countWrong && has(t.implied_pct) && t.implied_pct < 0) {
+      parts.push(`charged less than the food ${t.tax_on_top ? "and its tax " : ""}`
+                 + "— check the prices");
     }
   } else if (has(t.charge_diff_cents)) {
-    parts.push("✓ items and money both match");
-    if (has(t.expected_pct)) parts.push(`${t.expected_pct}% surcharge as expected`);
-  }
-
-  // Nothing to compare against yet -- fall back to the old estimate.
-  if (!parts.length) {
-    if (!raw) { verdict.className = "verdict"; verdict.textContent = ""; return; }
-    const diff = typed - t.bill_cents;
-    // No tick here even when it agrees: this only compares the receipt against
-    // items plus 4.712% tax, which is not what most places actually charge.
-    parts.push(diff === 0 ? `matches my tax estimate of $${t.bill}`
-                          : `off by $${(Math.abs(diff) / 100).toFixed(2)} from my $${t.bill}`);
+    parts.push(`✓ ${sum}` + (t.charge_diff_cents === 0 ? " — matches"
+      : ` — ${Math.abs(t.charge_diff_cents)}¢ off, just rounding`));
+  } else {
+    parts.push(`expecting ${sum}`);
   }
   if (t.restaurant_change) parts.push(`they gave you $${t.restaurant_change} back`);
 
@@ -660,15 +727,16 @@ function checkReceipt() {
     verdict.className = "verdict r";
   } else if (moneyWrong) {
     verdict.className = "verdict a";
-  } else if (has(t.charge_diff_cents)) {
+  } else if (t.charge_ok && !t.unpriced && has(t.charge_diff_cents)) {
     verdict.className = "verdict g";
   } else {
     verdict.className = "verdict a";
-    parts.push(has(t.expected_pct) ? "type what you were charged to check the money"
-                                   : "set the surcharge % to check the money");
+    if (!has(t.charge_diff_cents)) parts.push("type what you paid to check the money");
   }
-  verdict.textContent = parts.join(" · ");
+  verdict.replaceChildren(el("span", null, parts.join(" · ")), ...(offer ? [offer] : []));
 }
+
+const has = (v) => v !== null && v !== undefined;
 
 /* The app knows what it thinks you are holding; only you can see the actual
    notes. On 28 Aug the totals agreed at $244 but the split did not -- one $15
@@ -744,13 +812,17 @@ function renderChange() {
     return;
   }
 
-  // Two different physical actions -- handing over bills vs sending money back --
-  // so they get separate headed groups rather than one mixed list.
+  // Separate headed groups, one per thing to do: collecting money, handing
+  // over bills and sending Venmo back are different physical actions. People
+  // who still owed you used to sit under "Nothing owed" -- meaning nothing
+  // owed TO them -- which read as if they were square.
   const owedBack = (p) => p.status === "paid" && p.change !== "0.00";
   const groups = [
+    ["Still owes you", state.people.filter(owesYou)],
     ["Hand back cash", state.people.filter((p) => owedBack(p) && p.method === "cash")],
     ["Send back on Venmo", state.people.filter((p) => owedBack(p) && p.method === "venmo")],
-    ["Nothing owed", state.people.filter((p) => !owedBack(p))],
+    ["Needs a price first", state.people.filter((p) => p.unpriced)],
+    ["Square", state.people.filter((p) => !p.unpriced && p.status === "paid" && !owedBack(p))],
   ];
 
   const nodes = [];
@@ -772,35 +844,21 @@ function changeRow(person) {
     row.append(el("div", "chip a", "needs a price first"));
     return row;
   }
-  row.append(el("div", "chip", `owed $${person.owed}`));
-  row.append(paidField(person));
 
-  if (person.paid == null) return row;   // nothing to settle until they pay
-
-  if (person.status === "short") {
-    row.append(el("div", "big r", `still owes $${person.change.replace("-", "")}`));
+  if (owesYou(person)) {
+    row.append(el("div", "chip r", person.status === "short"
+      ? `still owes $${person.outstanding.replace(/\.00$/, "")} of $${person.owed}`
+      : `owes $${person.owed}`));
+    row.append(paidField(person));
+    const ask = requestLink(person);
+    if (ask) row.append(ask);
+    row.append(settleButtons(person));
     return row;
   }
-  row.append(el("div", "big g", person.change === "0.00" ? "square" : `$${person.change} back`));
 
-  // Venmo people get a tap-through charge link for the rounded amount
-  if (person.method === "venmo" && !person.change_given) {
-    if (person.venmo_link) {
-      const link = el("a", "venmoBtn", `Request $${person.owed}`);
-      link.href = person.venmo_link;
-      link.target = "_blank";
-      link.rel = "noopener";
-      row.append(link);
-    } else {
-      const ask = el("button", "venmoBtn ghostBtn", "+ Venmo username");
-      ask.onclick = () => {
-        const handle = prompt(`${person.name}'s Venmo username?`, "");
-        if (handle) send("/api/venmo-user", { name: person.name, venmo_user: handle },
-                         `Saved ${person.name}'s Venmo`);
-      };
-      row.append(ask);
-    }
-  }
+  row.append(el("div", "chip", `owed $${person.owed}`));
+  row.append(paidField(person));
+  row.append(el("div", "big g", person.change === "0.00" ? "square" : `$${person.change} back`));
 
   if (person.change !== "0.00") {
     const tick = el("label", "tick");
@@ -813,6 +871,46 @@ function changeRow(person) {
     row.append(tick);
   }
   return row;
+}
+
+/* Venmo payers who still owe get a charge link for exactly what is left --
+   all of it before they pay, just the rest after a short payment. This used
+   to appear only once they had paid, which is backwards. */
+function requestLink(person) {
+  if (person.method !== "venmo") return null;
+  if (person.venmo_link) {
+    const link = el("a", "venmoBtn", `Request $${person.outstanding.replace(/\.00$/, "")}`);
+    link.href = person.venmo_link;
+    link.target = "_blank";
+    link.rel = "noopener";
+    return link;
+  }
+  const ask = el("button", "venmoBtn ghostBtn", "+ Venmo username");
+  ask.type = "button";
+  ask.onclick = () => {
+    const handle = prompt(`${person.name}'s Venmo username?`, "");
+    if (handle) send("/api/venmo-user", { name: person.name, venmo_user: handle },
+                     `Saved ${person.name}'s Venmo`);
+  };
+  return ask;
+}
+
+/* They've paid what they owed. The page only says HOW it came in; the server
+   works out the amount from their priced items, so a double tap can't record
+   it twice. The way they said they'd pay comes first. */
+function settleButtons(person) {
+  const wrap = el("div", "settleBtns");
+  const amount = person.outstanding.replace(/\.00$/, "");
+  const ways = [["cash", `Paid $${amount} in cash`], ["venmo", `Paid $${amount} on Venmo`]];
+  if (person.method === "venmo") ways.reverse();
+  for (const [method, label] of ways) {
+    const button = el("button", `soft small settle ${method}`, label);
+    button.type = "button";
+    button.onclick = () => send("/api/settle", { name: person.name, method },
+                                `${person.name} is square`);
+    wrap.append(button);
+  }
+  return wrap;
 }
 
 // --- calendar -------------------------------------------------------------
@@ -904,21 +1002,42 @@ $("fMethod").onclick = (event) => {
   }
 };
 
+// The same lines as the ordering page: one thing per line, backups optional.
+const newLines = ItemLines.create($("fLines"), { list: "menuList",
+                                                 more: "another item (optional)" });
+
 $("orderForm").onsubmit = async (event) => {
   event.preventDefault();
   const name = $("fName").value.trim();
-  const item = $("fItem").value.trim();
-  if (!name || !item) return;
+  const items = newLines.values();
+  const drink = $("fDrink").value.trim();
+  if (!name) return;
+  if (!items.length && !drink) { newLines.focus(); return; }
   try {
     state = await api("/api/order",
-                      { name, item, paid: $("fPaid").value, method: newMethod });
+                      { name, items, drink, drink_fallback: $("fDrinkAlt").value.trim(),
+                        paid: $("fPaid").value, method: newMethod });
     render();
-    $("fName").value = $("fItem").value = $("fPaid").value = "";
+    $("fName").value = $("fPaid").value = $("fDrink").value = $("fDrinkAlt").value = "";
+    newLines.clear();
     $("fName").focus();
-    toast(`Added ${item} for ${name}`);
+    const count = items.length + (drink ? 1 : 0);
+    toast(count === 1 ? `Added ${items.length ? items[0].desc : drink} for ${name}`
+                      : `Added ${count} things for ${name}`);
   } catch (err) {
     toast(err.message, true);
   }
+};
+
+// Remembered per restaurant, like the surcharge: set it once at a place whose
+// prices already include tax and every later visit knows.
+$("taxMode").onclick = (event) => {
+  const button = event.target.closest(".tog");
+  if (!button) return;
+  const included = button.dataset.tax === "in";
+  if (included === state.tax_included) return;
+  send("/api/receipt", { tax_included: included },
+       included ? "Tax is in the prices here — remembered" : "Tax added on top here — remembered");
 };
 
 for (const id of ["receiptTotal", "receiptItems", "surchargePct", "cashHanded"]) {

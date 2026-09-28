@@ -271,6 +271,9 @@ def test_receipt_check():
           t["charge_diff_cents"] is None and t["count_diff"] is None)
     check("counts what was keyed in", t["keyed_items"] == 3, str(t["keyed_items"]))
 
+    # Doner Shack's shape: prices already include tax, 3% on the card.
+    day["tax_included"] = True
+    day["restaurant_method"] = "card"
     # The 28 Aug shape: one more item keyed than the restaurant ever billed.
     day["surcharge_pct"] = 3
     day["receipt_items"] = 2
@@ -301,6 +304,67 @@ def test_receipt_check():
 
     check("the old estimate is untouched", t["bill_cents"] == core.taxed_cents(4500))
 
+    section("MOST PLACES ADD TAX ON TOP, THEN THE CARD FEE")
+    # 23 Sept: $211.90 of food, $221.87 paid in cash. Tax on top, no card fee,
+    # and the till's per-line rounding lands a cent under the whole-order sum.
+    # The first version of this check could never go green on a day like it.
+    sept = _day([_order("A", 21190)], receipt_cents=22187, receipt_items=1)
+    t = core.totals(sept)
+    check("23 Sept matches, a cent inside the slack",
+          t["charge_ok"] and t["charge_diff_cents"] == -1, str(t["charge_diff_cents"]))
+    check("  ...and names the tax it added", t["tax_part_cents"] == 998,
+          str(t["tax_part_cents"]))
+    # 26 Aug from the saved days: $105.45 -> $110.42, on the card, no fee.
+    aug = _day([_order("A", 10545)], receipt_cents=11042, restaurant_method="card")
+    check("26 Aug matches exactly", core.totals(aug)["charge_diff_cents"] == 0)
+
+    # A $8 side the restaurant never rang up must never hide in the slack.
+    short = _day([_order("A", 20390), _order("B", 800)],
+                 receipt_cents=core.taxed_cents(20390), receipt_items=1)
+    t = core.totals(short)
+    check("a missing $8 side is caught", not t["charge_ok"] and t["count_diff"] == 1,
+          str(t["charge_diff_cents"]))
+
+    # A card fee is a card fee: paying cash, the remembered 3% must not apply.
+    cash = _day([_order("A", 10000)], surcharge_pct=3, restaurant_method="cash",
+                receipt_cents=core.taxed_cents(10000))
+    t = core.totals(cash)
+    check("a cash day ignores the card fee", t["charge_ok"] and t["expected_pct"] is None,
+          str(t["expected_charge_cents"]))
+
+    # On a card, both ways tills charge the fee are accepted.
+    items, tax = 10000, core.taxed_cents(10000) - 10000
+    for charged, how in ((items + tax + core.fee_of(items, 3), "fee on the food"),
+                         (core.charge_with_fee(items + tax, 3), "fee on food and tax")):
+        card = _day([_order("A", items)], surcharge_pct=3, restaurant_method="card",
+                    receipt_cents=charged)
+        check(f"card fee accepted: {how}", core.totals(card)["charge_diff_cents"] == 0)
+
+    # Doner Shack before anyone says its prices include tax: the check offers
+    # the switch rather than trying both on its own.
+    doner = _day([_order("A", 22625)], surcharge_pct=3, restaurant_method="card",
+                 receipt_cents=23304)
+    t = core.totals(doner)
+    check("the wrong tax setting is not green", not t["charge_ok"])
+    check("  ...but says the other setting would match", t["tax_switch"])
+    doner["tax_included"] = True
+    t = core.totals(doner)
+    check("  ...and matches to the cent once set", t["charge_ok"] and t["charge_diff_cents"] == 0)
+
+    section("THE ESTIMATE BEFORE THE RECEIPT")
+    plain = _day([_order("A", 1650)])
+    t = core.totals(plain)
+    check("tax on top, no fee: exactly the old bill",
+          t["estimate_cents"] == t["bill_cents"] == t["due_cents"])
+    doner = _day([_order("A", 22625)], surcharge_pct=3, restaurant_method="card",
+                 tax_included=True)
+    t = core.totals(doner)
+    check("tax in the prices, 3% card: what Doner Shack charges",
+          t["due_cents"] == 23304, money(t["due_cents"]))
+    check("the slack is a cent an item, never under 5c",
+          core.totals(_day([_order("A", 100)] * 12))["slack_cents"] == 12
+          and core.totals(plain)["slack_cents"] == 5)
+
 
 def test_forward_comparison_is_exact():
     """A correct order must land on exactly zero at every rate.
@@ -316,12 +380,22 @@ def test_forward_comparison_is_exact():
     for pct in (0, 3, 3.5, 8.25, 10):
         for subtotal in range(1, 40000, 11):
             charged = core.charge_with_fee(subtotal, pct)
-            day = _day([_order("A", subtotal)],
-                       receipt_cents=charged, surcharge_pct=pct)
+            day = _day([_order("A", subtotal)], receipt_cents=charged, surcharge_pct=pct,
+                       restaurant_method="card", tax_included=True)
             if core.totals(day)["charge_diff_cents"] != 0:
                 drift.append((pct, subtotal))
     check(f"exact across {5 * len(range(1, 40000, 11)):,} order/rate combinations",
           not drift, str(drift[:4]))
+    # And with tax on top, for every way a till can put the two together.
+    drift = []
+    for pct in (0, 3, 3.5):
+        for subtotal in range(1, 40000, 37):
+            for charged in core.till_totals(subtotal, True, pct):
+                day = _day([_order("A", subtotal)], receipt_cents=charged,
+                           surcharge_pct=pct, restaurant_method="card")
+                if core.totals(day)["charge_diff_cents"] != 0:
+                    drift.append((pct, subtotal, charged))
+    check("exact with tax on top too, both fee orders", not drift, str(drift[:4]))
     # The real receipt: 226.25 -> fee 6.79 -> 233.04.
     check("reproduces the Doner Shack receipt to the cent",
           core.charge_with_fee(22625, 3) == 23304,
@@ -842,6 +916,17 @@ def test_markup_ids():
         missing = sorted(wanted - present)
         check(f"{js} looks up nothing that isn't there", not missing, str(missing))
 
+    # lines.js loads before both page scripts, which each declare their own
+    # top-level $ and el. A second top-level declaration of either is a
+    # SyntaxError that stops the whole page, so it may add exactly one name.
+    lines = (HERE / "static" / "lines.js").read_text(encoding="utf-8")
+    top = re.findall(r"^(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)", lines, re.M)
+    check("lines.js adds one name to the page, ItemLines", top == ["ItemLines"], str(top))
+    for page in ("order", "admin"):
+        html = (HERE / "templates" / f"{page}.html").read_text(encoding="utf-8")
+        check(f"{page}.html loads lines.js before its own script",
+              0 < html.find("lines.js") < html.find(f"{page}.js"))
+
 
 def test_no_drift():
     """The real day files must produce byte-identical numbers to before."""
@@ -930,6 +1015,265 @@ def test_drinks(srv, D):
     check("the rule is stated where the box is",
           "out of both, you get no drink" in html)
     check("both boxes exist", 'id="pDrink"' in html and 'id="pDrinkAlt"' in html)
+
+
+def _person(state, name):
+    return next(p for p in state["people"] if p["name"] == name)
+
+
+def _state(srv, op, day):
+    return json.loads(srv.get(f"/api/day?date={day}", op=op)[1])
+
+
+def test_lines(srv, D):
+    """Several things per order, each with its own optional backup -- on the
+    ordering page and on the organiser's own form."""
+    section("ONE THING PER LINE, EACH WITH ITS OWN BACKUP")
+    day = core.shift_date(D, -50)
+    op = srv.user()
+    srv.login(op, "Milan")
+    srv.post("/api/place", op=op, date=day, place="Line Diner")
+
+    code, pub = srv.post(
+        "/api/public/order", date=day, name="Ron", method="cash",
+        items=[{"desc": "Rice plate with lamb", "fallback": "Rice plate with chicken"},
+               {"desc": "Side salad", "fallback": ""},
+               {"desc": "Fries", "fallback": "fries"},
+               {"desc": "  ", "fallback": "a backup for nothing"}],
+        drink="Coke", drink_fallback="Diet Coke")
+    check("three lines and a drink land in one request", code == 200, f"HTTP {code}")
+    rows = pub["orders"][0]["rows"]
+    check("  ...as four item rows, in order, the empty line skipped",
+          [r["desc"] for r in rows] == ["Rice plate with lamb", "Side salad", "Fries", "Coke"],
+          str(rows))
+    check("food carries its own backup", rows[0].get("fallback") == "Rice plate with chicken")
+    check("a line with no backup has none", "fallback" not in rows[1])
+    check("a backup that repeats its item is dropped", "fallback" not in rows[2])
+    check("the drink keeps its own",
+          rows[3] == {"desc": "Coke", "drink": True, "fallback": "Diet Coke"}, str(rows[3]))
+    check("still no money in the public payload",
+          not any(w in json.dumps(pub).lower() for w in ("price", "paid", "owed", "cents")))
+
+    code, _ = srv.post("/api/public/order", date=day, name="Deb", method="cash",
+                       items=[], drink="Iced tea")
+    check("a drink on its own is a fine order", code == 200, f"HTTP {code}")
+    code, err = srv.post("/api/public/order", date=day, name="Ian", method="cash",
+                         items=[{"desc": ""}])
+    check("nothing at all is refused", code == 400 and "like" in err.get("error", ""), str(err))
+    code, _ = srv.post("/api/public/order", date=day, name="Ian", method="cash",
+                       items=[{"desc": f"Thing {n}"} for n in range(11)])
+    check("eleven lines are refused", code == 400, f"HTTP {code}")
+    code, _ = srv.post("/api/public/order", date=day, name="Ian", method="cash",
+                       items=[{"desc": "x" * 151}])
+    check("a 151-character line is refused", code == 400, f"HTTP {code}")
+
+    section("THE SAME-DISH QUESTION IS ASKED LINE BY LINE")
+    code, err = srv.post("/api/public/order", date=day, name="Pat", method="cash",
+                         items=[{"desc": "Side salad"}, {"desc": "rice plate w/ lamb"}])
+    check("the reworded line is questioned", code == 409 and err.get("error") == "similar_item",
+          f"HTTP {code}")
+    check("  ...naming which line it means",
+          err.get("line") == 1 and err.get("desc") == "rice plate w/ lamb", str(err))
+    code, err = srv.post("/api/public/order", date=day, name="Pat", method="cash",
+                         items=[{"desc": "rice plate w/ lamb"},
+                                {"desc": "Rice plate lamb, extra rice"}],
+                         items_ok=["rice plate w/ lamb"])
+    check("an answer covers only its own line", code == 409 and err.get("line") == 1, str(err))
+    code, _ = srv.post("/api/public/order", date=day, name="Pat", method="cash",
+                       items=[{"desc": "rice plate w/ lamb"},
+                              {"desc": "Rice plate lamb, extra rice"}],
+                       items_ok=["rice plate w/ lamb", "Rice plate lamb, extra rice"])
+    check("answering both lets it through", code == 200, f"HTTP {code}")
+
+    section("THE ORGANISER'S FORM TAKES LINES AND A DRINK TOO")
+    code, adm = srv.post("/api/order", op=op, date=day, name="Kai", paid="20",
+                         items=[{"desc": "Veggie wrap", "fallback": "Salad - no meat"},
+                                {"desc": "Fries"}],
+                         drink="Water")
+    kai = _person(adm, "Kai")
+    check("two lines and a drink for Kai",
+          code == 200 and [r["desc"] for r in kai["item_rows"]] == ["Veggie wrap", "Fries", "Water"],
+          f"HTTP {code} {kai['item_rows'] if code == 200 else ''}")
+    check("  ...with the backup kept and the drink marked",
+          kai["item_rows"][0]["fallback"] == "Salad - no meat" and kai["item_rows"][2]["drink"])
+    check("  ...and the cash recorded", kai["paid"] == "20.00")
+    lamb = next(g for g in adm["groups"] if g["desc"] == "Rice plate with lamb")
+    check("a food group lists its backups for the call",
+          [(f["desc"], f["count"]) for f in lamb["fallbacks"]] == [("Rice plate with chicken", 1)],
+          str(lamb["fallbacks"]))
+    check("  ...without being taken for a drink", lamb["drink"] is False)
+
+    section("EDITING KEEPS DRINKS, BACKUPS AND PRICES")
+    for desc, price in (("Rice plate with lamb", "15.50"), ("Coke", "2.50"),
+                        ("Veggie wrap", "14")):
+        srv.post("/api/price", op=op, date=day, desc=desc, price=price)
+    ron = _person(_state(srv, op, day), "Ron")
+    rows = [{"desc": r["desc"], "fallback": r["fallback"],
+             "kind": "drink" if r["drink"] else None} for r in ron["item_rows"]]
+    rows[1]["desc"] = "Veggie wrap"          # reworded from "Side salad"
+    code, adm = srv.post("/api/edit-person", op=op, date=day, name="Ron", new_name="Ron",
+                         items=rows)
+    ron = _person(adm, "Ron")["item_rows"]
+    check("the edit goes through with no prices sent", code == 200, f"HTTP {code}")
+    check("the drink is still a drink, backup and all",
+          ron[3]["drink"] and ron[3]["fallback"] == "Diet Coke", str(ron[3]))
+    check("the food backup survived", ron[0]["fallback"] == "Rice plate with chicken")
+    check("unchanged lines keep their price",
+          ron[0]["price"] == "15.50" and ron[3]["price"] == "2.50", str(ron))
+    check("a reworded line takes today's price for its new wording",
+          ron[1]["price"] == "14.00", str(ron[1]))
+
+
+def test_settle(srv, D):
+    """Someone who still owes pays up, in cash or on Venmo."""
+    section("MARKING SOMEONE PAID")
+    day = core.shift_date(D, -51)
+    op = srv.user()
+    srv.login(op, "Milan")
+    # Everyone's plate is $15.50, so everyone owes $17 (16.23 rounded up).
+    for name, method, paid in (("Deb", "venmo", ""), ("Ron", "cash", "15"),
+                               ("Kai", "cash", "15"), ("Ann", "venmo", "10"),
+                               ("Gina", "cash", "")):
+        srv.post("/api/order", op=op, date=day, name=name, item=f"{name}'s plate",
+                 method=method, paid=paid)
+    for name in ("Deb", "Ron", "Kai", "Ann"):
+        srv.post("/api/price", op=op, date=day, desc=f"{name}'s plate", price="15.50")
+    srv.post("/api/venmo-user", op=op, date=day, name="Ann", venmo_user="@ann")
+
+    code, _ = srv.post("/api/settle", date=day, name="Deb", method="venmo")
+    check("anonymous cannot mark anyone paid", code == 403, f"HTTP {code}")
+
+    state = _state(srv, op, day)
+    deb, ann = _person(state, "Deb"), _person(state, "Ann")
+    check("an unpaid person owes it all", deb["status"] == "unpaid" and deb["outstanding"] == "17.00")
+    check("a short Venmo payer is asked for just the rest",
+          "amount=7&" in ann["venmo_link"], ann["venmo_link"])
+    # Deb $17, Ron $2, Kai $2, Ann $7. Gina is unpriced, so not yet counted.
+    check("all four are counted as still owing", state["totals"]["owing"] == 4
+          and state["totals"]["outstanding"] == "28.00",
+          f'{state["totals"]["owing"]} / {state["totals"]["outstanding"]}')
+
+    code, state = srv.post("/api/settle", op=op, date=day, name="Deb", method="venmo")
+    deb = _person(state, "Deb")
+    check("unpaid -> paid in full, on Venmo",
+          code == 200 and deb["paid"] == "17.00" and deb["method"] == "venmo"
+          and deb["status"] == "paid", str(deb.get("paid")))
+    code, state = srv.post("/api/settle", op=op, date=day, name="Ron", method="cash")
+    ron = _person(state, "Ron")
+    check("short in cash, the rest in cash -> one payment of $17",
+          ron["paid"] == "17.00" and not ron["topups"] and ron["change"] == "0.00", str(ron))
+    code, state = srv.post("/api/settle", op=op, date=day, name="Kai", method="venmo")
+    kai = _person(state, "Kai")
+    check("short in cash, the rest on Venmo -> kept as its own payment",
+          kai["paid"] == "15.00" and kai["topups"] == [{"amount": "2.00", "method": "venmo"}]
+          and kai["status"] == "paid", str(kai))
+    t = state["totals"]
+    # Cash: Ron $17 + Kai $15. Venmo: Deb $17 + Ann $10 + Kai's later $2.
+    check("each dollar lands in the pot it came in",
+          t["cash_in"] == "32.00" and t["venmo_in"] == "29.00", f'{t["cash_in"]} / {t["venmo_in"]}')
+
+    code, err = srv.post("/api/settle", op=op, date=day, name="Kai", method="cash")
+    check("a double tap records nothing twice", code == 400 and "owe" in err.get("error", ""),
+          str(err))
+    code, err = srv.post("/api/settle", op=op, date=day, name="Gina", method="cash")
+    check("an unpriced order can't be settled", code == 400 and "Price" in err.get("error", ""),
+          str(err))
+
+    code, state = srv.post("/api/remove-topup", op=op, date=day, name="Kai", index=0)
+    kai = _person(state, "Kai")
+    check("a later payment can be undone",
+          code == 200 and kai["status"] == "short" and kai["outstanding"] == "2.00", str(kai))
+    check("  ...and leaves the Venmo pot", state["totals"]["venmo_in"] == "27.00",
+          state["totals"]["venmo_in"])
+
+
+def test_bar():
+    section("THE BAR LEADS WITH ONE ANSWER")
+    # The 23 Sept shape that read as a contradiction: $235 in cash with $28 of
+    # it handed back, $20 on Venmo, a $221.87 receipt paid in cash.
+    day = _day([_order("A", 19700, 23500, "cash"), _order("B", 1900, 2000, "venmo")],
+               receipt_cents=22187)
+    t = core.totals(day)
+    check("$207 cash once the $28 change is back",
+          t["cash_on_hand_cents"] == 20700 and t["cash_change_cents"] == 2800)
+    check("$14.87 short at the till", t["cash_short_cents"] == 1487)
+    check("and $5.13 ahead overall", t["net_surplus_cents"] == 513)
+    check("the headline is exactly the sum printed under it",
+          t["net_surplus_cents"]
+          == t["cash_on_hand_cents"] + t["venmo_held_cents"] - t["due_cents"])
+    view = webapp.admin_view(day)["totals"]
+    check("the page is told 'ahead'", view["net_surplus"] == "5.13" and not view["net_short"])
+
+    day["orders"].append(_order("C", 1650))          # owes $18 and has paid nothing
+    view = webapp.admin_view(day)["totals"]
+    check("money still to come is counted apart",
+          view["owing"] == 1 and view["outstanding"] == "18.00")
+    check("  ...and says where it leaves you once paid",
+          view["after_collect"] == "23.13" and not view["after_short"])
+
+
+def test_staying_logged_in(srv, D):
+    section("A HICCUP IS NEVER DRESSED UP AS A LOGIN")
+    webapp.app.logger.disabled = True        # the handler logs; this one is on purpose
+    try:
+        with webapp.app.test_request_context("/admin"):
+            body, code = webapp.unhandled(RuntimeError("database waking up"))
+    finally:
+        webapp.app.logger.disabled = False
+    check("an error on a page is a 500", code == 500)
+    check("  ...that offers to try again", "Try again" in body)
+    check("  ...and is not the login form", 'name="password"' not in body)
+
+    real, calls = store.get_setting, []
+
+    def flaky(key):
+        calls.append(key)
+        if len(calls) == 1:
+            raise RuntimeError("server closed the connection unexpectedly")
+        return real(key)
+
+    store.get_setting = flaky
+    try:
+        stamp = webapp.password_stamp()
+    finally:
+        store.get_setting = real
+    check("a failed read of the login stamp is retried once",
+          len(calls) == 2 and stamp == (real("password_changed_at") or ""))
+
+    section("A SESSION KEY THAT OUTLIVES A RESTART")
+    first = store.stable_secret("test_session_secret")
+    check("made once, then kept", first and store.stable_secret("test_session_secret") == first)
+    from flask import Flask
+    bare = Flask("bare")
+    bare.secret_key = None
+    webapp._Sessions().get_signing_serializer(bare)
+    check("with no SECRET_KEY set, sessions use the stored key",
+          bare.secret_key == store.stable_secret("session_secret"))
+
+    section("THE NAME IS REMEMBERED, AND A LOGIN ONLY GOES HOME")
+    op = srv.user()
+    srv.login(op, "Seth")
+    srv.form("/logout", op)
+    _, page = srv.get("/login", op=op)
+    check("logged out, the form still has the name in", 'value="Seth"' in page)
+
+    class _Stay(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None                      # report the redirect, don't follow it
+
+    data = urllib.parse.urlencode({"name": "Seth", "password": "pw"}).encode()
+    for target in ("https://evil.example/", "//evil.example/", "/\\evil.example"):
+        stay = urllib.request.build_opener(
+            _Stay, urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        request = urllib.request.Request(
+            srv.base + "/login?next=" + urllib.parse.quote(target, safe=""),
+            data=data, method="POST")
+        try:
+            stay.open(request)
+            where = "(no redirect)"
+        except urllib.error.HTTPError as err:
+            where = err.headers.get("Location", "")
+        check(f"next={target} stays on this site", where.endswith("/admin"), where)
 
 
 def test_password(srv, D):
@@ -1110,9 +1454,12 @@ def test_menu_files(srv, D):
           "object-fit: contain" in css and
           "object-fit: cover" not in css.split(".lightbox")[0])
 
-    section("THE PRICE BOX STILL CLEARS THE $")
-    check("padding rule is specific enough to survive the shorthand",
-          "input.editPrice" in css)
+    section("THE EDIT PANEL HAS NO MYSTERY PRICE BOX")
+    # It was a per-item price box with "later" as its placeholder, and nobody
+    # could tell what it was for. Prices are typed once, in step 3.
+    check("no price box in the edit panel",
+          "editPrice" not in adminjs and 'placeholder = "later"' not in adminjs)
+    check("the $ boxes that remain keep their padding rule", ".money.money input" in css)
 
     section("NOTHING EXPLAINS ITSELF IN A BOX TOO NARROW TO READ IT")
     # .money inputs are a fixed 150px. A long placeholder is silently clipped
@@ -1213,6 +1560,9 @@ def test_menu_files_on_disk():
         check("other places unaffected", store.list_menu_files("Elsewhere") == [])
         check("delete works", store.delete_menu_file(file_id))
         check("and it's gone", store.load_menu_file(file_id) == (None, None))
+        key = store.stable_secret("session_secret")
+        check("a session key is kept without a database too",
+              key and store.stable_secret("session_secret") == key)
     finally:
         os.environ["DATABASE_URL"] = saved
         store.reset_for_tests()
@@ -1255,6 +1605,7 @@ def main():
         test_surcharge_follows_the_restaurant()
         test_menu_link_safety()
         test_markup_ids()
+        test_bar()
         test_no_drift()
         test_storage_parity()
         test_encoding()
@@ -1266,8 +1617,11 @@ def main():
             test_menu_files(srv, D)
             test_wording_prompt(srv, D)
             test_drinks(srv, D)
+            test_lines(srv, D)
+            test_settle(srv, D)
             test_concurrency(srv, D)
             test_login_claims_day(srv, D)   # claims today
+            test_staying_logged_in(srv, D)
             test_password(srv, D)           # LAST: changes the shared password
         finally:
             srv.stop()

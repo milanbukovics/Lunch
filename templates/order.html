@@ -36,24 +36,30 @@
         <span>The menu</span>
         <div class="menuStrip" id="menuStrip"></div>
       </div>
-      <div class="f">
+      <div class="f orderPart">
         <span>What would you like to have for lunch today?</span>
-        <input id="pItem" required>
+        <div class="itemLines" id="pLines"></div>
+        <p class="hint lineNote">One thing per line. The backup is optional — it's what
+          we get if they're out of your first choice.</p>
         <div class="alsoBox hidden" id="alsoBox">
           <p class="hint">What others ordered today — tap to match</p>
           <div class="alsoStrip" id="alsoStrip"></div>
         </div>
       </div>
-      <div class="drinkPair">
-        <div class="f grow">
-          <span>Drink? <small>optional</small></span>
-          <input id="pDrink" placeholder="Coke, water, iced tea…">
+      <div class="f orderPart">
+        <span>Drink <small>optional</small></span>
+        <div class="itemLine drinkLine">
+          <span class="lineNo"></span>
+          <input id="pDrink" class="lineItem" placeholder="Coke, water, iced tea…"
+                 autocomplete="off" aria-label="Drink">
+          <label class="lineBackup">
+            <span>If they're out</span>
+            <input id="pDrinkAlt" class="lineAlt" placeholder="backup (optional)"
+                   autocomplete="off" aria-label="Backup drink">
+          </label>
         </div>
-        <div class="f grow">
-          <span>If they're out of that</span>
-          <input id="pDrinkAlt" placeholder="second choice">
-        </div>
-        <p class="hint drinkNote">We'll ask for the second one instead. If they're out of both, you get no drink.</p>
+        <p class="hint lineNote">Its own backup, also optional.
+          If they're out of both, you get no drink.</p>
       </div>
       <div class="f">
         <span>Paying with</span>
@@ -100,6 +106,7 @@
 </div>
 
 <div id="toast" class="toast"></div>
+<script src="{{ url_for('static', filename='lines.js') }}"></script>
 <script src="{{ url_for('static', filename='order.js') }}"></script>
 </body>
 </html>

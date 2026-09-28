@@ -12,18 +12,38 @@ import hmac
 import os
 import secrets
 import threading
+import time
 from collections import Counter
 from functools import wraps
 from urllib.parse import urlparse
 
 from flask import (Flask, Response, jsonify, redirect, render_template, request,
                    session, url_for)
+from flask.sessions import SecureCookieSessionInterface
 
 import lunchcore as core
 import store
 
+
+class _Sessions(SecureCookieSessionInterface):
+    """Sessions signed with SECRET_KEY -- or, if the host never set one, with
+    a key made once and kept in the store.
+
+    A fresh random key at every start logs every organiser out whenever the
+    process restarts, and the free host restarts after every quiet spell; it
+    would also split the two workers, each signing with its own. Looked up on
+    first use rather than at import, so importing the app touches no storage.
+    """
+
+    def get_signing_serializer(self, app):
+        if not app.secret_key:
+            app.secret_key = store.stable_secret("session_secret")
+        return super().get_signing_serializer(app)
+
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.secret_key = os.environ.get("SECRET_KEY") or None
+app.session_interface = _Sessions()
 # Menu photos come off phones. Anything larger than this is a mistake.
 app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 MENU_FILE_LIMIT = 6          # per place
@@ -74,7 +94,9 @@ def unhandled(err):
     app.logger.exception("unhandled")
     if request.path.startswith("/api/"):
         return jsonify({"error": f"{type(err).__name__}: {err}"}), 500
-    return render_template("login.html", error="Something went wrong"), 500
+    # Never the login form. This used to show it, so a database still waking
+    # up on a quiet morning looked exactly like having been logged out.
+    return render_template("error.html"), 500
 
 
 # --- auth ------------------------------------------------------------------
@@ -92,7 +114,14 @@ def password_stamp():
     so that changing the password logs every OTHER device out -- a signed
     cookie would otherwise stay valid for thirty days, including on whichever
     device the change was meant to shut out."""
-    return store.get_setting(PASSWORD_STAMP_KEY) or ""
+    try:
+        return store.get_setting(PASSWORD_STAMP_KEY) or ""
+    except Exception:
+        # Every organiser page reads this first, so it is what meets a
+        # database still waking after a quiet night. One retry keeps that from
+        # turning the day's first page into an error.
+        time.sleep(0.5)
+        return store.get_setting(PASSWORD_STAMP_KEY) or ""
 
 
 def password_ok(supplied):
@@ -150,10 +179,26 @@ def admin_required(view):
     return guarded
 
 
+NAME_COOKIE = "organiser_name"
+NAME_COOKIE_AGE = 365 * 24 * 3600
+
+
+def _next_page():
+    """Where to go after logging in: a path on this site, never elsewhere --
+    otherwise a crafted link could send a fresh login off to any address."""
+    target = request.args.get("next") or ""
+    if target.startswith("/") and not target.startswith("//") and "\\" not in target:
+        return target
+    return url_for("admin")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
-    name = session.get("admin_name", "")
+    # The name is remembered apart from the session, so on the odd occasion a
+    # login is needed again -- after a password change, say -- it is already
+    # filled in and only the password is asked for.
+    name = session.get("admin_name") or request.cookies.get(NAME_COOKIE, "")
     if request.method == "POST":
         supplied = request.form.get("password", "")
         name = (request.form.get("name") or "").strip()
@@ -173,7 +218,10 @@ def login():
             with store.edit_day(core.today_str()) as day:
                 if not day.get("organiser"):
                     day["organiser"] = name
-            return redirect(request.args.get("next") or url_for("admin"))
+            response = redirect(_next_page())
+            response.set_cookie(NAME_COOKIE, name[:60], max_age=NAME_COOKIE_AGE,
+                                httponly=True, samesite="Lax", secure=request.is_secure)
+            return response
         else:
             error = "Wrong password"
     return (render_template("login.html", error=error, name=name),
@@ -314,10 +362,16 @@ def venmo_link(person, place, owed):
             f"&note={note.replace(' ', '%20')}")
 
 
+def dollars(cents):
+    """For a Venmo amount: '32' for whole dollars, '1.50' otherwise."""
+    return str(cents // 100) if cents % 100 == 0 else money(cents)
+
+
 def person_view(order, place):
     subtotal = core.subtotal_of(order)
     missing = core.unpriced_in(order)
     paid = order.get("paid_cents")
+    total = core.paid_total(order)
     view = {
         "name": order["name"],
         "items": [i["desc"] for i in order["items"]],
@@ -328,24 +382,41 @@ def person_view(order, place):
                       for i in order["items"]],
         "subtotal": money(subtotal),
         "paid": money(paid) if paid is not None else None,
+        # Later payments made the other way -- the last $2 on Venmo after $15
+        # in cash -- each shown on its own so it can be undone.
+        "topups": [{"amount": money(t["cents"]), "method": t["method"]}
+                   for t in order.get("topups") or []],
         "unpriced": missing,
         "change_given": order.get("change_given", False),
         "method": core.method_of(order),
         "venmo_user": order.get("venmo_user", ""),
     }
     if missing:
-        view.update(owed=None, change=None, status="needs price", venmo_link="")
+        view.update(owed=None, change=None, outstanding=None, status="needs price",
+                    venmo_link="")
         return view
     owed = core.owed_dollars(subtotal)
+    still = core.outstanding_of(order)
     view["owed"] = owed
-    view["venmo_link"] = (venmo_link(order, place, owed)
-                          if core.method_of(order) == "venmo" else "")
-    if paid is None:
+    view["outstanding"] = money(still)
+    # A charge link for what is still owed: all of it before they pay a thing,
+    # just the rest after a short payment, and nothing once they are square.
+    view["venmo_link"] = (venmo_link(order, place, dollars(still))
+                          if core.method_of(order) == "venmo" and still else "")
+    if total is None:
         view.update(change=None, status="unpaid")
         return view
-    change = paid - owed * 100
+    change = total - owed * 100
     view.update(change=money(change), status="short" if change < 0 else "paid")
     return view
+
+
+def charge_basis(t):
+    """How the till total is built, in words: '4.712% tax + 3% card fee'."""
+    parts = ["4.712% tax" if t["tax_on_top"] else "tax already in the prices"]
+    if t["expected_pct"]:
+        parts.append(f"{t['expected_pct']:g}% card fee")
+    return " + ".join(parts)
 
 
 def admin_view(day):
@@ -374,6 +445,7 @@ def admin_view(day):
         # Trailing zeros trimmed: 3.0 shows as "3", which is what they typed.
         "surcharge_pct": ("" if day.get("surcharge_pct") is None
                           else f"{float(day['surcharge_pct']):g}"),
+        "tax_included": core.tax_included_of(day),
         "restaurant_paid": (money(day["restaurant_paid_cents"])
                             if day.get("restaurant_paid_cents") is not None else ""),
         "restaurant_method": core.restaurant_method_of(day),
@@ -391,11 +463,26 @@ def admin_view(day):
             "expected_pct": t["expected_pct"],
             "implied_pct": t["implied_pct"],
             "charge_diff_cents": t["charge_diff_cents"],
+            "charge_diff": (None if t["charge_diff_cents"] is None
+                            else money(abs(t["charge_diff_cents"]))),
+            "charge_ok": t["charge_ok"],
+            "tax_switch": t["tax_switch"],
+            "tax_on_top": t["tax_on_top"],
+            "tax_part": money(t["tax_part_cents"]),
+            "fee_part": (None if not t["fee_part_cents"] else money(t["fee_part_cents"])),
+            "charge_basis": charge_basis(t),
+            "estimate": money(t["estimate_cents"]),
             "food_diff": (None if t["food_diff_cents"] is None
                           else money(abs(t["food_diff_cents"]))),
             "food_diff_cents": t["food_diff_cents"],
             "expected_charge": (None if t["expected_charge_cents"] is None
                                 else money(t["expected_charge_cents"])),
+            # Owed to you by people whose items are all priced -- the part of
+            # any shortfall that fixes itself once they pay.
+            "owing": t["owing"],
+            "outstanding": money(t["outstanding_cents"]),
+            "after_collect": money(abs(t["net_surplus_cents"] + t["outstanding_cents"])),
+            "after_short": t["net_surplus_cents"] + t["outstanding_cents"] < 0,
             "collected": money(t["collected_cents"]),
             "change_out": money(t["change_out_cents"]),
             "cash_in": money(t["cash_in_cents"]),
@@ -418,6 +505,7 @@ def admin_view(day):
             "pocket_abs": money(abs(t["pocket_cents"])),
             "net_surplus": money(abs(t["net_surplus_cents"])),
             "net_short": t["net_surplus_cents"] < 0,
+            "net_zero": t["net_surplus_cents"] == 0,
             "any_venmo": t["venmo_in_cents"] > 0,
         },
         "priced_groups": sum(1 for g in groups if g["price_cents"] is not None),
@@ -452,17 +540,20 @@ def resolved(day_date):
     """Fill in an unset restaurant method from the most recent day that chose one.
 
     The surcharge is filled in the same way, but from the last day at the SAME
-    restaurant -- one place charges 3% on a card and the next charges nothing.
-    Neither is written back here: this is the read path, so they are a
-    suggestion until the organiser saves the receipt panel. That also keeps the
-    lookup out of the write transaction, where walking other days to find it
-    would take a second lock and deadlock.
+    restaurant -- one place charges 3% on a card and the next charges nothing
+    -- and so is whether its prices already include tax. None of it is written
+    back here: this is the read path, so they are a suggestion until the
+    organiser saves the receipt panel. That also keeps the lookup out of the
+    write transaction, where walking other days to find it would take a second
+    lock and deadlock.
     """
     day = store.load_day(day_date)
     if day.get("restaurant_method") not in ("cash", "card"):
         day["restaurant_method"] = store.inherited_restaurant_method(day_date)
     if day.get("surcharge_pct") is None:
         day["surcharge_pct"] = store.inherited_surcharge_pct(day_date, day.get("place"))
+    if day.get("tax_included") is None:
+        day["tax_included"] = store.inherited_tax_included(day_date, day.get("place"))
     return day
 
 
@@ -668,23 +759,71 @@ def api_public_day():
         return jsonify({"error": str(err)}), 400
 
 
+# One order can hold several things. Capped on the public form only -- the one
+# anybody can post to -- and far above what one person orders for one lunch.
+MAX_LINES = 10
+MAX_TEXT = 150
+
+
+def _text(value):
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _line(desc, fallback, kind=None):
+    """One item row, before its price. A backup that just repeats the item
+    means nothing and is dropped."""
+    row = {"desc": desc}
+    if kind:
+        row["kind"] = kind
+    if fallback and fallback.casefold() != desc.casefold():
+        row["fallback"] = fallback
+    return row
+
+
+def order_lines(body, capped=False):
+    """The item rows one order adds: its food lines, then an optional drink.
+
+    Reads the lines form ({"items": [{"desc", "fallback"}, ...]}) and the old
+    single box ({"item": "..."}), so a page loaded before the change still
+    works. Every line may name a backup in case they're out of it; a backup
+    with nothing before it is ignored. Empty lines are skipped -- the form
+    always keeps a blank one at the bottom.
+    """
+    raw = body.get("items")
+    if isinstance(raw, list):
+        wanted = [line if isinstance(line, dict) else {"desc": line} for line in raw]
+    else:
+        wanted = [{"desc": body.get("item")}]
+    rows = [_line(_text(line.get("desc")), _text(line.get("fallback")))
+            for line in wanted if _text(line.get("desc"))]
+    if capped and len(rows) > MAX_LINES:
+        raise ValueError(f"That's more than {MAX_LINES} things — split it into two orders")
+    drink = _text(body.get("drink"))
+    if drink:
+        rows.append(_line(drink, _text(body.get("drink_fallback")), kind="drink"))
+    if capped and any(len(r["desc"]) > MAX_TEXT or len(r.get("fallback", "")) > MAX_TEXT
+                      for r in rows):
+        raise ValueError(f"Keep each line under {MAX_TEXT} characters")
+    return rows
+
+
 @app.post("/api/public/order")
 def api_public_order():
     """Anyone may add or change THEIR OWN order, until the day is closed."""
     body = request.get_json(silent=True) or {}
     name = (body.get("name") or "").strip()
-    desc = (body.get("item") or "").strip()
     method = body.get("method") or "cash"
     venmo_user = (body.get("venmo_user") or "").strip()
-    # A drink is optional, and can name what to get if they're out of it. A
-    # fallback with no drink means nothing and is dropped.
-    drink = (body.get("drink") or "").strip()
-    fallback = (body.get("drink_fallback") or "").strip() if drink else ""
 
     if not name:
         return jsonify({"error": "Enter your name"}), 400
-    if not desc:
-        return jsonify({"error": "Enter what you want"}), 400
+    try:
+        rows = order_lines(body, capped=True)
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 400
+    # A drink on its own is a fine order; nothing at all is not.
+    if not rows:
+        return jsonify({"error": "Enter what you'd like"}), 400
     if method not in ("cash", "venmo"):
         return jsonify({"error": "Pick cash or Venmo"}), 400
 
@@ -713,42 +852,50 @@ def api_public_order():
         # The same dish typed two ways makes two lines, so the count never adds
         # up against the receipt -- on 28 Aug six rice plates showed as 2, 2, 1
         # and 1, and the missing plate went unseen. Offer the wording everyone
-        # else used. `item_ok` is kept separate from `confirm` above so
-        # answering the name question never silently answers this one too.
-        if not body.get("item_ok"):
-            existing = [i["desc"] for o in day["orders"] for i in o["items"]]
-            # Already worded exactly like somebody else's -- that is the thing
-            # we are trying to encourage, so never interrupt it, even when some
-            # third wording of the same dish is also on the list.
-            matched = any(d.casefold() == desc.casefold() for d in existing)
-            close = [] if matched else core.similar_items(desc, existing)
-            if close:
-                return jsonify({"error": "similar_item", "match": close[0],
-                                "count": sum(1 for d in existing
-                                             if d.casefold() == close[0].casefold())}), 409
+        # else used, one line at a time. `items_ok` holds the lines already
+        # answered "mine is different"; it is kept apart from `confirm` above
+        # so answering the name question never silently answers this one, and
+        # answering for one line never waves through the next. The old page's
+        # `item_ok: true` still skips the check, as it always did.
+        if body.get("item_ok") is not True:
+            said = body.get("items_ok")
+            answered = ({d.casefold() for d in said if isinstance(d, str)}
+                        if isinstance(said, list) else set())
+            # Food only, on both sides: drinks are short, and "Coke" vs "Coke
+            # Zero" already stay apart.
+            existing = [i["desc"] for o in day["orders"] for i in o["items"]
+                        if i.get("kind") != "drink"]
+            food = [r["desc"] for r in rows if r.get("kind") != "drink"]
+            for index, desc in enumerate(food):
+                if desc.casefold() in answered:
+                    continue
+                # Already worded exactly like somebody else's -- the thing we
+                # are trying to encourage, so never interrupt it, even when
+                # some third wording of the same dish is also on the list.
+                if any(d.casefold() == desc.casefold() for d in existing):
+                    continue
+                close = core.similar_items(desc, existing)
+                if close:
+                    return jsonify({"error": "similar_item", "line": index, "desc": desc,
+                                    "match": close[0],
+                                    "count": sum(1 for d in existing
+                                                 if d.casefold() == close[0].casefold())}), 409
 
         if order is None:
             order = {"name": name, "items": [], "paid_cents": None}
             day["orders"].append(order)
-        order["items"].append({"desc": desc,
-                               "price_cents": _price_from(menus, day["place"], desc)})
-        # The drink is one more item row, added in this same locked write. As
-        # an item it is priced, counted and totalled exactly like food, which
-        # is right: it is a line on the receipt. No same-wording question for
-        # it -- drinks are short, and "Coke" vs "Coke Zero" already stay apart.
-        if drink:
-            row = {"desc": drink, "price_cents": _price_from(menus, day["place"], drink),
-                   "kind": "drink"}
-            if fallback:
-                row["fallback"] = fallback
-            order["items"].append(row)
+        # Every line is its own item row, added in this one locked write. A
+        # drink is an item too, so it is priced, counted and totalled exactly
+        # like food -- which is right: it is a line on the receipt.
+        for row in rows:
+            order["items"].append({**row, "price_cents": _price_from(menus, day["place"],
+                                                                     row["desc"])})
         order["method"] = method
         if method == "venmo" and venmo_user:
             order["venmo_user"] = venmo_user
 
-    store.learn_item(place, desc, None)
-    if drink:
-        store.learn_item(place, drink, None)
+    for row in rows:
+        store.learn_item(place, row["desc"], None)
     return jsonify(public_view(store.load_day(day_date)))
 
 
@@ -759,8 +906,17 @@ def _price_from(menus, place, desc):
     return None
 
 
-def _remembered_price(day, desc):
-    return _price_from(store.load_menus(), day["place"], desc)
+def _item_key(item):
+    return item["desc"].casefold(), item.get("kind") == "drink"
+
+
+def _todays_price(day, desc):
+    """The price this wording already carries today, if everyone who ordered
+    it agrees on one."""
+    key = desc.casefold()
+    prices = {i["price_cents"] for o in day["orders"] for i in o["items"]
+              if i["desc"].casefold() == key and i["price_cents"] is not None}
+    return prices.pop() if len(prices) == 1 else None
 
 
 @app.post("/api/public/remove")
@@ -869,30 +1025,35 @@ def parse_method(value):
 
 
 def act_order(day, body):
+    """The organiser typing someone's order: the same lines, backups and drink
+    as the ordering page, with the money they handed over."""
     name = (body.get("name") or "").strip()
-    desc = (body.get("item") or "").strip()
     if not name:
         raise ValueError("Enter a name")
-    if not desc:
+    rows = order_lines(body)
+    if not rows:
         raise ValueError("Enter an item")
+    # A price typed with the order only makes sense for a single item. The
+    # form no longer sends one -- prices come off the receipt in step 3 -- but
+    # an older page might.
+    typed = _text(body.get("price"))
+    if typed and len(rows) != 1:
+        raise ValueError("Type prices in step 3 when there are several items")
 
-    price = None
-    if (body.get("price") or "").strip():
-        price = core.parse_price(body["price"])
-    else:
-        price = _remembered_price(day, desc)
-
+    menus = store.load_menus()
     order = find_order(day, name)
     if order is None:
         order = {"name": name, "items": [], "paid_cents": None}
         day["orders"].append(order)
-    order["items"].append({"desc": desc, "price_cents": price})
+    for row in rows:
+        price = (core.parse_price(typed) if typed
+                 else _price_from(menus, day["place"], row["desc"]))
+        order["items"].append({**row, "price_cents": price})
+        queue_learn(day["place"], row["desc"], price)
     if (body.get("paid") or "").strip():
         order["paid_cents"] = core.parse_price(body["paid"])
     if body.get("method"):
         order["method"] = parse_method(body["method"])
-
-    queue_learn(day["place"], desc, price)
 
 
 def act_price(day, body):
@@ -957,6 +1118,13 @@ def act_receipt(day, body):
             if not 0 <= pct <= 100:
                 raise ValueError("A surcharge is between 0 and 100 percent")
             day["surcharge_pct"] = pct
+    # Whether this place's prices already include tax. Saved on the day, and
+    # carried forward to later visits to the same restaurant by resolved().
+    if "tax_included" in body:
+        value = body.get("tax_included")
+        if not isinstance(value, bool):
+            raise ValueError("Say whether the prices include tax")
+        day["tax_included"] = value
 
 
 def act_merge_items(day, body):
@@ -985,6 +1153,43 @@ def act_change_given(day, body):
     require_order(day, body)["change_given"] = bool(body.get("given"))
 
 
+def act_settle(day, body):
+    """They have paid what they still owed, in cash or on Venmo.
+
+    The amount is worked out here from their priced items, never taken from
+    the page, so a double tap finds nothing left to settle instead of
+    recording the money twice.
+    """
+    order = require_order(day, body)
+    method = parse_method(body.get("method"))
+    still = core.outstanding_of(order)
+    if still is None:
+        raise ValueError(f"Price {order['name']}'s items first")
+    if not still:
+        raise ValueError(f"{order['name']} doesn't owe anything")
+    if core.paid_total(order) is None:
+        order["paid_cents"] = still
+        order["method"] = method
+    elif order.get("paid_cents") is not None and method == core.method_of(order):
+        order["paid_cents"] += still
+    else:
+        # Paid the other way, so it goes in the other pot. Cash and Venmo are
+        # counted apart because only cash can pay the restaurant.
+        order.setdefault("topups", []).append({"cents": still, "method": method})
+
+
+def act_remove_topup(day, body):
+    """Undo one later payment -- tapped on the wrong person, say."""
+    order = require_order(day, body)
+    later = order.get("topups") or []
+    index = body.get("index")
+    if not isinstance(index, int) or not 0 <= index < len(later):
+        raise ValueError("No such payment")
+    later.pop(index)
+    if not later:
+        order.pop("topups", None)
+
+
 def act_place(day, body):
     day["place"] = (body.get("place") or "").strip()
 
@@ -1011,16 +1216,39 @@ def act_edit_person(day, body):
         raise ValueError(f"{new_name} is already on the list")
 
     rows = body.get("items")
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         raise ValueError("items must be a list")
 
+    # The panel no longer shows prices -- they are typed once in step 3 -- so
+    # each line keeps the price it already had, matched on wording and kind one
+    # for one. A new or reworded line takes today's price for that wording, or
+    # the remembered one. An older page that still sends a price is obeyed.
+    kept = {}
+    for item in order["items"]:
+        kept.setdefault(_item_key(item), []).append(item["price_cents"])
+    menus = None
     parsed = []
     for row in rows:
-        desc = (row.get("desc") or "").strip()
+        desc = _text(row.get("desc"))
         if not desc:
             raise ValueError("Every item needs a name")
-        raw = (row.get("price") or "").strip()
-        parsed.append({"desc": desc, "price_cents": core.parse_price(raw) if raw else None})
+        # kind and fallback ride along: dropping them turned a drink into food
+        # and lost its backup every time someone's order was edited.
+        item = _line(desc, _text(row.get("fallback")),
+                     kind="drink" if row.get("kind") == "drink" else None)
+        if "price" in row:
+            raw = _text(row.get("price"))
+            price = core.parse_price(raw) if raw else None
+        else:
+            same = kept.get(_item_key(item))
+            price = same.pop(0) if same else None
+            if price is None:
+                price = _todays_price(day, desc)
+            if price is None:
+                menus = menus if menus is not None else store.load_menus()
+                price = _price_from(menus, day["place"], desc)
+        item["price_cents"] = price
+        parsed.append(item)
 
     order["name"] = new_name
     order["items"] = parsed
@@ -1041,6 +1269,7 @@ ADMIN_ACTIONS = {
     "change-given": act_change_given, "place": act_place, "lock": act_lock,
     "remove-item": act_remove_item, "edit-person": act_edit_person,
     "delete-person": act_delete_person, "merge-items": act_merge_items,
+    "settle": act_settle, "remove-topup": act_remove_topup,
 }
 
 

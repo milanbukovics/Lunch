@@ -54,6 +54,27 @@ def unpriced_in(order):
     return sum(1 for i in order["items"] if i["price_cents"] is None)
 
 
+def paid_total(order):
+    """Everything this person has handed over, or None if nothing yet.
+
+    `paid_cents` is what they first gave. `topups` are later payments made
+    the OTHER way -- $15 cash at lunch, the last $2 on Venmo that evening --
+    kept apart because cash and Venmo land in different pots.
+    """
+    later = order.get("topups") or []
+    if order.get("paid_cents") is None and not later:
+        return None
+    return (order.get("paid_cents") or 0) + sum(t["cents"] for t in later)
+
+
+def outstanding_of(order):
+    """What they still owe, in cents -- 0 when square or ahead, None while an
+    item has no price, because until then nobody knows."""
+    if unpriced_in(order):
+        return None
+    return max(0, owed_dollars(subtotal_of(order)) * 100 - (paid_total(order) or 0))
+
+
 def method_of(order):
     """'cash' or 'venmo'. Anything unset or unrecognised counts as cash, so
     older day files and hand-edits stay correct."""
@@ -193,6 +214,11 @@ def surcharge_of(day):
     return None
 
 
+def fee_of(subtotal_cents, pct):
+    """A percentage fee on an amount, rounded to the cent on its own."""
+    return int((Decimal(subtotal_cents) * Decimal(pct) / 100).to_integral_value(ROUND_HALF_UP))
+
+
 def charge_with_fee(subtotal_cents, pct):
     """What a till would ring up: round the fee, then add it.
 
@@ -200,8 +226,38 @@ def charge_with_fee(subtotal_cents, pct):
     rounded to the cent on its own and then added. Doing it as one
     multiplication would round in a different place and be a cent out.
     """
-    fee = (Decimal(subtotal_cents) * Decimal(pct) / 100).to_integral_value(ROUND_HALF_UP)
-    return subtotal_cents + int(fee)
+    return subtotal_cents + fee_of(subtotal_cents, pct)
+
+
+def tax_included_of(day):
+    """True when this restaurant's menu prices already include the 4.712% GET,
+    so the till adds none on top. Doner Shack works like that; most places add
+    it, so unset means on top."""
+    return day.get("tax_included") is True
+
+
+def till_totals(items_cents, tax_on_top, fee_pct):
+    """What a till could ring up for these items, lowest first.
+
+    Food, then 4.712% GET unless the menu prices already include it, then the
+    card fee. Tills work the fee out two ways -- on the food alone, or on the
+    food plus its tax -- and nothing on a receipt says which, so both come back
+    and the check accepts either. With no tax added they are the same number,
+    which is how Doner Shack's 226.25 -> 233.04 still comes out to the cent.
+    """
+    tax = taxed_cents(items_cents) - items_cents if tax_on_top else 0
+    if not fee_pct:
+        return [items_cents + tax]
+    return sorted({items_cents + tax + fee_of(items_cents, fee_pct),
+                   charge_with_fee(items_cents + tax, fee_pct)})
+
+
+# Tax is rounded line by line at the till, so once it is involved a correct
+# receipt can land a cent or two off a figure worked out on the whole order
+# (23 Sept: $211.90 of food, $221.87 charged, $221.88 on paper). A cent per
+# item covers that with room to spare and is still far below anything on a
+# menu, so a missing plate or drink can never hide inside it.
+MIN_SLACK_CENTS = 5
 
 
 def inherited_surcharge_pct(day_date, place):
@@ -237,16 +293,16 @@ def group_items(day):
                                             "drink": False})
             group["names"].append(order["name"])
             group["prices"].add(item["price_cents"])
-            # A drink can name what to get if they're out. Two people wanting
-            # a Coke with different backups still group as one "2x Coke" --
-            # the key stays the plain desc, because set_price_for_desc()
-            # matches on exactly that string -- and the call list lists the
-            # backups underneath.
             if item.get("kind") == "drink":
                 group["drink"] = True
-                alt = (item.get("fallback") or "").strip()
-                if alt:
-                    group["fallbacks"][alt] = group["fallbacks"].get(alt, 0) + 1
+            # Food or drink can name what to get if they're out. Two people
+            # wanting a Coke with different backups still group as one
+            # "2x Coke" -- the key stays the plain desc, because
+            # set_price_for_desc() matches on exactly that string -- and the
+            # call list lists the backups underneath.
+            alt = (item.get("fallback") or "").strip()
+            if alt:
+                group["fallbacks"][alt] = group["fallbacks"].get(alt, 0) + 1
 
     grouped = []
     for group in groups.values():
@@ -278,22 +334,35 @@ def totals(day):
     """Every number the footer shows, recomputed from the orders."""
     items_cents = sum(subtotal_of(o) for o in day["orders"])
     unpriced = sum(unpriced_in(o) for o in day["orders"])
-    collected = sum(o["paid_cents"] for o in day["orders"] if o.get("paid_cents") is not None)
-    change_out = 0
-    unpaid = 0
+    collected = change_out = unpaid = 0
+    # Still to come in, from people whose items are all priced. Display only:
+    # it moves no money, it just says how much of a shortfall is temporary.
+    outstanding = owing = 0
     # Split by method: the restaurant is paid in cash, so Venmo money cannot be
     # spent there and refunding a Venmo payer must not drain the bills.
     cash_in = venmo_in = cash_change = venmo_change = 0
     for order in day["orders"]:
-        paid = order.get("paid_cents")
+        still = outstanding_of(order)
+        if still:
+            outstanding += still
+            owing += 1
+        paid = paid_total(order)
         if paid is None:
             unpaid += 1
             continue
+        collected += paid
         venmo = method_of(order) == "venmo"
+        first = order.get("paid_cents") or 0
         if venmo:
-            venmo_in += paid
+            venmo_in += first
         else:
-            cash_in += paid
+            cash_in += first
+        # A later payment made the other way lands in its own pot.
+        for later in order.get("topups") or []:
+            if later.get("method") == "venmo":
+                venmo_in += later["cents"]
+            else:
+                cash_in += later["cents"]
         if not unpriced_in(order):  # their change isn't knowable until priced
             change = max(0, paid - owed_dollars(subtotal_of(order)) * 100)
             change_out += change
@@ -304,14 +373,10 @@ def totals(day):
 
     bill = taxed_cents(items_cents)
 
-    # Checking the order against the receipt. `bill` cannot do this job: it is
-    # items plus 4.712% GET, while the receipt total is whatever the restaurant
-    # charged -- at Doner Shack, tax-inclusive prices plus a 3% card surcharge.
-    # Those two never agree, so on 28 Aug the check read "off by $23.50" on a
-    # day it would also have read "off by $3.87" with a flawless order, and got
-    # ignored. These compare like with like instead: untaxed items against the
-    # receipt's own subtotal line, and a plain count of things. Both read zero
-    # when the order is right, which is the state the old check could not reach.
+    # Checking the order against the receipt. First a plain count of things:
+    # if the receipt lists a different NUMBER of things, something was never
+    # rung up -- on 28 Aug that was a plate nobody made. The subtotal figures
+    # below only exist on older days, which recorded the receipt's subtotal.
     keyed_items = sum(len(o["items"]) for o in day["orders"])
     receipt_subtotal = day.get("receipt_subtotal_cents")
     receipt_items = day.get("receipt_items")
@@ -324,41 +389,57 @@ def totals(day):
             float(Decimal(day["receipt_cents"] - receipt_subtotal)
                   / Decimal(receipt_subtotal) * 100), 1)
 
-    # The money check, without needing a subtotal off the receipt. Run FORWARDS:
-    # what the till should have rung up for these orders, against what it did.
-    # Dividing the charged total back out to recover a subtotal would carry up
-    # to a cent of rounding, and a check that cries "$0.01 over" on a correct
-    # order is a check that gets ignored -- which has already happened twice.
-    # Forwards, both sides round the same way and a right order lands on zero.
-    expected_pct = surcharge_of(day)
+    # The money check, run FORWARDS: what the till should have rung up for
+    # these orders, against what it did. Food, then 4.712% GET unless this
+    # place's prices already include it, then the card fee -- only when the
+    # card paid, since cash pays no card fee. The first version assumed Doner
+    # Shack's model everywhere (tax already in the prices), so at every place
+    # that adds tax on top a correct receipt read "the fee looks like 4.7%"
+    # and could never go green.
+    by_card = restaurant_method_of(day) == "card"
+    tax_on_top = not tax_included_of(day)
+    fee_pct = surcharge_of(day) if by_card else None
+    candidates = till_totals(items_cents, tax_on_top, fee_pct) if items_cents else []
+    estimate = candidates[-1] if candidates else 0
+    tax_part = taxed_cents(items_cents) - items_cents if tax_on_top else 0
+    slack = max(MIN_SLACK_CENTS, keyed_items)
     charged = day.get("receipt_cents")
     expected_charge = charge_diff = food_diff = implied_pct = None
-    if expected_pct is not None and items_cents:
-        expected_charge = charge_with_fee(items_cents, expected_pct)
-        if charged is not None:
-            charge_diff = charged - expected_charge
-            # Shown in food terms: the raw gap includes the fee charged on the
-            # discrepancy, and only the food figure maps onto a menu price.
-            food_diff = int((Decimal(charge_diff) / (1 + Decimal(expected_pct) / 100))
-                            .to_integral_value(ROUND_HALF_UP))
-    if charged is not None and items_cents:
-        # What the fee would have to have been for these orders to be right.
-        # Negative means they charged less than the food alone, so the orders
-        # are what is wrong, not the fee.
-        implied_pct = round(
-            float(Decimal(charged - items_cents) / Decimal(items_cents) * 100), 1)
+    charge_ok = tax_switch = False
+    if candidates:
+        expected_charge = (estimate if charged is None
+                           else min(candidates, key=lambda c: (abs(charged - c), c)))
+    if candidates and charged is not None:
+        charge_diff = charged - expected_charge
+        charge_ok = abs(charge_diff) <= slack
+        if not charge_ok:
+            # Would the other tax setting explain it? Offered, never assumed:
+            # silently trying both could hide a missing item that happens to
+            # cost about 4.7% of the order.
+            other = till_totals(items_cents, not tax_on_top, fee_pct)
+            tax_switch = any(abs(charged - c) <= slack for c in other)
+        # Shown in food terms: the raw gap includes the tax and fee charged on
+        # the discrepancy, and only the food figure maps onto a menu price.
+        scale = (TAX if tax_on_top else Decimal(1)) * (1 + Decimal(fee_pct or 0) / 100)
+        food_diff = int((Decimal(charge_diff) / scale).to_integral_value(ROUND_HALF_UP))
+        # What the card fee would have to have been for these orders to be
+        # right. Negative means they charged less than the food and its tax,
+        # so the orders are what is wrong, not the fee.
+        base = items_cents + tax_part
+        implied_pct = round(float(Decimal(charged - base) / Decimal(base) * 100), 1)
 
     cash_left = collected - change_out
     cash_on_hand = cash_in - cash_change
     venmo_held = venmo_in - venmo_change
     due = day.get("receipt_cents")
     if due is None:
-        due = bill                      # before the receipt exists, go on the estimate
+        # Before the receipt exists, go on the till estimate. With tax on top
+        # and no card fee -- every day saved before this -- that is `bill`.
+        due = estimate
     restaurant_paid = day.get("restaurant_paid_cents")
 
     # Paying by card needs no bills, so there is no cash constraint to breach and
     # the "am I square?" figure spans both pots instead of just the cash one.
-    by_card = restaurant_method_of(day) == "card"
     return {
         "people": len(day["orders"]),
         "unpaid": unpaid,
@@ -372,11 +453,22 @@ def totals(day):
         "surcharge_pct": surcharge_pct,
         "receipt_subtotal_cents": receipt_subtotal,
         "receipt_items": receipt_items,
-        "expected_pct": None if expected_pct is None else float(round(expected_pct, 3)),
+        # The card fee this day expects: None when paying cash, or when unknown.
+        "expected_pct": None if fee_pct is None else float(round(fee_pct, 3)),
+        "tax_on_top": tax_on_top,
+        "tax_part_cents": tax_part,
+        "fee_part_cents": (None if expected_charge is None
+                           else expected_charge - items_cents - tax_part),
         "expected_charge_cents": expected_charge,
+        "estimate_cents": estimate,
         "charge_diff_cents": charge_diff,
+        "charge_ok": charge_ok,
+        "slack_cents": slack,
+        "tax_switch": tax_switch,
         "food_diff_cents": food_diff,
         "implied_pct": implied_pct,
+        "outstanding_cents": outstanding,
+        "owing": owing,
         "collected_cents": collected,
         "change_out_cents": change_out,
         "cash_left_cents": cash_left,
@@ -416,7 +508,7 @@ def new_day(day_date=None):
             "receipt_cents": None, "restaurant_paid_cents": None,
             "restaurant_method": None, "locked": False, "organiser": "",
             "receipt_subtotal_cents": None, "receipt_items": None,
-            "surcharge_pct": None}
+            "surcharge_pct": None, "tax_included": None}
 
 
 def day_path(day_date):
@@ -454,6 +546,7 @@ def load_day(day_date):
     day.setdefault("receipt_subtotal_cents", None)  # older days only; not collected now
     day.setdefault("receipt_items", None)           # how many lines it billed
     day.setdefault("surcharge_pct", None)           # the place's card fee, if known
+    day.setdefault("tax_included", None)            # None = inherit / tax on top
     return day
 
 

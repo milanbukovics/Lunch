@@ -33,23 +33,38 @@
   <button class="step active" data-step="orders"><b>1</b> Take orders</button>
   <button class="step" data-step="call"><b>2</b> Call it in</button>
   <button class="step" data-step="prices"><b>3</b> Receipt prices<i id="priceBadge"></i></button>
-  <button class="step" data-step="change"><b>4</b> Hand out change<i id="changeBadge"></i></button>
+  <button class="step" data-step="change"><b>4</b> Settle up<i id="changeBadge"></i></button>
 </nav>
 
 <main>
 
   <!-- 1 ---------------------------------------------------------------- -->
   <section class="panel" data-panel="orders">
-    <form id="orderForm" class="entry" autocomplete="off">
+    <form id="orderForm" class="entry orderEntry" autocomplete="off">
       <label class="f grow">
         <span>Name</span>
         <input id="fName" required>
       </label>
-      <label class="f grow">
-        <span>Item</span>
-        <input id="fItem" list="menuList" required>
+      <div class="f full">
+        <span>Items <small>one per line · backups optional</small></span>
+        <div class="itemLines wideLines" id="fLines"></div>
         <datalist id="menuList"></datalist>
-      </label>
+      </div>
+      <div class="f full">
+        <span>Drink <small>optional</small></span>
+        <div class="itemLines wideLines">
+          <div class="itemLine drinkLine">
+            <span class="lineNo"></span>
+            <input id="fDrink" class="lineItem" list="menuList" placeholder="Coke, water…"
+                   autocomplete="off" aria-label="Drink">
+            <label class="lineBackup">
+              <span>If they're out</span>
+              <input id="fDrinkAlt" class="lineAlt" list="menuList" placeholder="backup (optional)"
+                     autocomplete="off" aria-label="Backup drink">
+            </label>
+          </div>
+        </div>
+      </div>
       <label class="f">
         <span>Gave me</span>
         <div class="money"><i>$</i><input id="fPaid" inputmode="decimal" placeholder="optional"></div>
@@ -79,7 +94,7 @@
           <span>Or link to the menu online</span>
           <input id="menuUrl" type="url" inputmode="url" placeholder="https://..." autocomplete="off">
         </label>
-        <button id="menuUrlAdd" class="ghost" type="button">Add link</button>
+        <button id="menuUrlAdd" class="soft" type="button">Add link</button>
       </div>
     </div>
 
@@ -105,8 +120,10 @@
 
     <div class="receiptCheck">
       <p class="hint">Count the things the receipt lists (a <b>5x</b> line counts as 5) and type
-        what actually left your pocket. The <b>surcharge</b> is the card fee this place adds —
-        type it once and it comes back by itself next time you order from here.</p>
+        what actually left your pocket. Most places add the <b>4.712% tax</b> on top of their
+        prices; some already include it. The <b>card surcharge</b> is
+        the card fee this place adds, and only applies when you pay by card. Set both once —
+        they come back by themselves next time you order from the same place.</p>
       <div class="f">
         <span>You paid with</span>
         <div class="toggle" id="payMethod">
@@ -114,13 +131,20 @@
           <button class="tog" type="button" data-m="card">Card</button>
         </div>
       </div>
+      <div class="f">
+        <span>Tax</span>
+        <div class="toggle" id="taxMode">
+          <button class="tog" type="button" data-tax="top">Added on top</button>
+          <button class="tog" type="button" data-tax="in">In the prices</button>
+        </div>
+      </div>
+      <label class="f" id="surchargeField">
+        <span>Card surcharge %</span>
+        <input id="surchargePct" inputmode="decimal" placeholder="3">
+      </label>
       <label class="f">
         <span>Items on the receipt</span>
         <input id="receiptItems" inputmode="numeric" placeholder="15">
-      </label>
-      <label class="f">
-        <span>Surcharge %</span>
-        <input id="surchargePct" inputmode="decimal" placeholder="3">
       </label>
       <label class="f">
         <span id="receiptLabel">Total charged to you</span>
@@ -156,16 +180,19 @@
 
 </main>
 
+<!-- The one answer first -- ahead or behind -- then the sum that gets there,
+     then only the notes that are true today. -->
 <footer class="cashbar">
-  <div class="cashline" id="cashLine">—</div>
-  <div class="verdictBig" id="cashRow"></div>
-  <div class="cashline hidden" id="venmoRow"></div>
-  <div class="cashline" id="netRow"></div>
+  <div class="cashline" id="barFacts">—</div>
+  <div class="verdictBig" id="barVerdict"></div>
+  <div class="cashline barMath" id="barMath"></div>
+  <div class="cashline hidden" id="barNotes"></div>
 </footer>
 
 <div id="calendar" class="calendar hidden"></div>
 <div id="toast" class="toast"></div>
 
+<script src="{{ url_for('static', filename='lines.js') }}"></script>
 <script src="{{ url_for('static', filename='admin.js') }}"></script>
 </body>
 </html>

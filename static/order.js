@@ -24,6 +24,13 @@ const date = new Date().toLocaleDateString("en-CA");
    name, so it asks -- which is the right answer, not a regression. */
 const orderedHere = new Set();
 
+// One thing per line, each with its own optional backup -- see lines.js.
+const lines = ItemLines.create($("pLines"), { more: "something else? (optional)" });
+
+/* Lines answered "No, mine is different" for the order being sent. Each
+   answer covers only its own line; cleared once the order goes in. */
+let itemsOk = [];
+
 function typedName() {
   return $("pName").value.trim();
 }
@@ -142,10 +149,7 @@ function renderAlsoOrdered() {
     chip.type = "button";
     chip.append(el("span", null, entry.desc));
     chip.append(el("i", null, `·${entry.count}`));
-    chip.onclick = () => {
-      $("pItem").value = entry.desc;
-      $("pItem").focus();
-    };
+    chip.onclick = () => lines.fill(entry.desc);
     return chip;
   }));
 }
@@ -221,7 +225,7 @@ function renderMine() {
           toast(`Removed ${desc}`);
         } catch (err) { toast(err.message, true); }
       };
-      const no = el("button", "ghost", "Keep it");
+      const no = el("button", "ghostBtn", "Keep it");
       no.type = "button";
       no.onclick = () => { confirmingIndex = null; renderMine(); };
 
@@ -420,6 +424,7 @@ $("pMethod").onclick = (event) => {
 
 function hideSamePrompt() {
   $("samePrompt").classList.add("hidden");
+  lines.highlight(-1);
 }
 
 /* Someone typed a name that already has an order. It is usually them adding a
@@ -435,7 +440,7 @@ function askIfSamePerson(info) {
   yes.type = "button";
   yes.onclick = () => submitOrder("add");
 
-  const no = el("button", "ghost", `I'm a different ${info.name}`);
+  const no = el("button", "ghostBtn", `I'm a different ${info.name}`);
   no.type = "button";
   no.onclick = () => {
     hideSamePrompt();
@@ -457,10 +462,12 @@ function askIfSamePerson(info) {
 
 /* They typed a dish someone has already ordered, worded differently. Using one
    wording keeps it as a single line with a count, which is the number that can
-   be checked against the receipt. Same el() rule as above: coworkers wrote
-   this text. */
+   be checked against the receipt. With several lines the server names the one
+   it means, and that line is marked while the question is open. Same el()
+   rule as above: coworkers wrote this text. */
 function askIfSameDish(info, confirm) {
   const box = $("samePrompt");
+  lines.highlight(info.line);
 
   // `confirm` is carried straight back through. Both questions can fire on one
   // order -- a shared first name AND a reworded dish -- and re-asking the name
@@ -468,49 +475,61 @@ function askIfSameDish(info, confirm) {
   const yes = el("button", "primary", "Yes — use their wording");
   yes.type = "button";
   yes.onclick = () => {
-    $("pItem").value = info.match;
-    submitOrder(confirm, true);
+    lines.setDesc(info.line, info.match);
+    submitOrder(confirm);
   };
 
-  const no = el("button", "ghost", "No, mine is different");
+  // Answers for this line only: the next line still gets asked if it needs to.
+  const no = el("button", "ghostBtn", "No, mine is different");
   no.type = "button";
-  no.onclick = () => submitOrder(confirm, true);
+  no.onclick = () => {
+    itemsOk.push(info.desc);
+    submitOrder(confirm);
+  };
 
   const buttons = el("div", "sameBtns");
   buttons.append(yes, no);
   box.replaceChildren(
     el("p", null, `${info.count} ${info.count === 1 ? "person" : "people"} `
-                  + `ordered "${info.match}". Is that the same thing?`),
+                  + `ordered "${info.match}". Is your "${info.desc}" the same thing?`),
     buttons);
   box.classList.remove("hidden");
 }
 
-async function submitOrder(confirm, itemOk) {
+async function submitOrder(confirm) {
   const name = $("pName").value.trim();
-  const item = $("pItem").value.trim();
-  if (!name || !item) return;
+  const items = lines.values();
+  const drink = $("pDrink").value.trim();
+  if (!name) return;
+  if (!items.length && !drink) {
+    toast("Type what you'd like first", true);
+    lines.focus();
+    return;
+  }
 
-  const body = { name, item, method, venmo_user: $("pVenmo").value,
-                 drink: $("pDrink").value.trim(),
-                 drink_fallback: $("pDrinkAlt").value.trim() };
+  const body = { name, items, method, venmo_user: $("pVenmo").value,
+                 drink, drink_fallback: $("pDrinkAlt").value.trim() };
   // Already ordered under this name in this sitting, so it is the same person
   // adding a second item -- don't make them confirm it again.
   if (confirm || orderedHere.has(name.toLowerCase())) body.confirm = "add";
   // Kept separate from confirm above: answering the name question must not
   // silently answer the wording question too.
-  if (itemOk) body.item_ok = true;
+  if (itemsOk.length) body.items_ok = itemsOk;
 
   try {
     state = await api("/api/public/order", body);
     orderedHere.add(name.toLowerCase());
     confirmingIndex = null;        // adding cancels any half-asked removal
-    $("pItem").value = "";
+    itemsOk = [];
+    lines.clear();
     $("pDrink").value = "";
     $("pDrinkAlt").value = "";
     hideSamePrompt();
     $("nameHint").classList.add("hidden");
     render();
-    toast(`Added ${item}`);
+    const count = items.length + (drink ? 1 : 0);
+    toast(count === 1 ? `Added ${items.length ? items[0].desc : drink}`
+                      : `Added ${count} things`);
   } catch (err) {
     const problem = err.data && err.data.error;
     if (problem === "name_taken") askIfSamePerson(err.data);
