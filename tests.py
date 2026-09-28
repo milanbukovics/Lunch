@@ -1187,6 +1187,26 @@ def test_settle(srv, D):
           state["totals"]["venmo_in"])
 
 
+def test_deploy_safety():
+    """28 Sept: a redeploy pulled in SQLAlchemy 2.1, whose default Postgres
+    driver is not installed, and every page that read an order failed."""
+    section("A REDEPLOY CANNOT SWAP THE DATABASE DRIVER")
+    host = "u:p@db.example/lunch?sslmode=require"
+    check("postgresql:// names psycopg2 outright",
+          store.engine_url(f"postgresql://{host}") == f"postgresql+psycopg2://{host}")
+    check("Render's old postgres:// too",
+          store.engine_url(f"postgres://{host}") == f"postgresql+psycopg2://{host}")
+    check("a driver someone chose is left alone",
+          store.engine_url(f"postgresql+psycopg://{host}") == f"postgresql+psycopg://{host}")
+    check("sqlite is untouched", store.engine_url("sqlite:///x.db") == "sqlite:///x.db")
+
+    reqs = [line.strip() for line in
+            (HERE / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+    open_ended = [r for r in reqs if "<" not in r and "==" not in r]
+    check("every requirement has a ceiling", reqs and not open_ended, str(open_ended))
+
+
 def test_bar():
     section("THE BAR LEADS WITH ONE ANSWER")
     # The 23 Sept shape that read as a contradiction: $235 in cash with $28 of
@@ -1605,6 +1625,7 @@ def main():
         test_surcharge_follows_the_restaurant()
         test_menu_link_safety()
         test_markup_ids()
+        test_deploy_safety()
         test_bar()
         test_no_drift()
         test_storage_parity()

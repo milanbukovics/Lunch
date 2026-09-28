@@ -40,6 +40,22 @@ def using_db():
     return bool(database_url())
 
 
+def engine_url(url):
+    """The connection URL with the Postgres driver named outright.
+
+    A bare postgresql:// leaves the choice to SQLAlchemy, and SQLAlchemy 2.1
+    changed its mind: it now asks for psycopg 3, which is not installed here.
+    That took the live site down on 28 Sept, the first rebuild after 2.1 came
+    out. Naming psycopg2 -- the driver requirements.txt installs -- means no
+    upgrade can quietly switch it again. Render also hands out the old
+    postgres:// prefix, which SQLAlchemy 2 rejects outright.
+    """
+    for bare in ("postgres://", "postgresql://"):
+        if url.startswith(bare):
+            return "postgresql+psycopg2://" + url[len(bare):]
+    return url
+
+
 # --- schema ----------------------------------------------------------------
 
 def _connect():
@@ -56,10 +72,7 @@ def _connect():
         from sqlalchemy import (Column, Integer, LargeBinary, MetaData, String,
                                 Table, Text, create_engine)
 
-        url = database_url()
-        # Render hands out the old postgres:// prefix that SQLAlchemy 2 rejects
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
+        url = engine_url(database_url())
 
         if url.startswith("sqlite"):
             engine = create_engine(url, future=True,
