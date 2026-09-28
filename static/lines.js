@@ -7,6 +7,12 @@
    shows under the first line from the start -- nobody should have to discover
    that it exists -- and under any other line once something is typed there.
 
+   On the ordering page every box says what it is for, in words: "Item 1 --
+   what you want to order", and over each backup the question itself. Bare
+   numbers and a terse "If they're out" left people guessing. The organiser's
+   form passes `compact` and keeps one tight row per item: the organiser is
+   typing for someone else, where "what you want" would read oddly.
+
    Everything goes in as textContent: coworkers type all of it. Wrapped so
    the page gains exactly one name, ItemLines. Both page scripts declare their
    own top-level $ and el, and a second declaration of either would stop the
@@ -14,6 +20,7 @@
 const ItemLines = (() => {
   const START = 2;     // lines on an empty form
   const MOST = 10;     // the server refuses more than this from the public page
+  const BACKUP_QUESTION = "If they're out, what would you like to get?";
 
   const node = (tag, cls, text) => {
     const made = document.createElement(tag);
@@ -37,21 +44,28 @@ const ItemLines = (() => {
 
     function build() {
       const row = node("div", "itemLine");
-      const number = node("span", "lineNo");
+      const head = node("div", "lineHead");
       const item = node("input", "lineItem");
       item.autocomplete = "off";
       const backup = node("label", "lineBackup");
       const alt = node("input", "lineAlt");
       alt.autocomplete = "off";
-      alt.placeholder = "backup (optional)";
       if (options.list) {
         item.setAttribute("list", options.list);
         alt.setAttribute("list", options.list);
       }
-      backup.append(node("span", null, "If they're out"), alt);
-      row.append(number, item, backup);
+      if (options.compact) {
+        alt.placeholder = "backup (optional)";
+        backup.append(node("span", "backupHead", "If they're out"), alt);
+      } else {
+        // The question is the label; "optional" sits in the empty box, where
+        // it doesn't wrap onto a line of its own on a phone.
+        alt.placeholder = "optional";
+        backup.append(node("span", "backupHead", BACKUP_QUESTION), alt);
+      }
+      row.append(head, item, backup);
 
-      const line = { row, number, item, alt, backup };
+      const line = { row, head, item, alt, backup };
       item.addEventListener("input", tidy);
       alt.addEventListener("input", tidy);
       item.addEventListener("focus", () => { last = line; });
@@ -79,7 +93,13 @@ const ItemLines = (() => {
       }
       if (used(lines[lines.length - 1]) && lines.length < MOST) add();
       lines.forEach((line, index) => {
-        line.number.textContent = String(index + 1);
+        if (options.compact) {
+          line.head.textContent = String(index + 1);
+        } else {
+          line.head.replaceChildren(
+            node("b", null, `Item ${index + 1}`),
+            ` — ${index === 0 ? "what you want to order" : "optional"}`);
+        }
         line.item.placeholder = index === 0 ? (options.first || "") : (options.more || "");
         line.backup.classList.toggle("hidden", index > 0 && !used(line));
         line.item.setAttribute("aria-label", `Item ${index + 1}`);

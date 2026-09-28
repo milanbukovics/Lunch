@@ -1123,6 +1123,20 @@ def test_lines(srv, D):
     check("a reworded line takes today's price for its new wording",
           ron[1]["price"] == "14.00", str(ron[1]))
 
+    section("EVERY BOX SAYS WHAT IT IS FOR")
+    # Bare numbers and a terse "If they're out" left people guessing; the user
+    # asked for it in words: "Item 1 -- what you want to order", and "if they
+    # are out, what would you like to get?"
+    lines_js = (HERE / "static" / "lines.js").read_text(encoding="utf-8")
+    _, page = srv.get("/")
+    question = "If they're out, what would you like to get?"
+    check("each backup asks the question outright", question in lines_js)
+    check("  ...and so does the drink's", question in page)
+    check("items are headed 'Item 1 — what you want to order'",
+          "`Item ${index + 1}`" in lines_js and "what you want to order" in lines_js)
+    check("the organiser's own form stays compact",
+          "compact: true" in (HERE / "static" / "admin.js").read_text(encoding="utf-8"))
+
 
 def test_settle(srv, D):
     """Someone who still owes pays up, in cash or on Venmo."""

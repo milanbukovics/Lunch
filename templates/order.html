@@ -39,8 +39,7 @@
       <div class="f orderPart">
         <span>What would you like to have for lunch today?</span>
         <div class="itemLines" id="pLines"></div>
-        <p class="hint lineNote">One thing per line. The backup is optional — it's what
-          we get if they're out of your first choice.</p>
+        <p class="hint lineNote">One thing per box — another appears as you type.</p>
         <div class="alsoBox hidden" id="alsoBox">
           <p class="hint">What others ordered today — tap to match</p>
           <div class="alsoStrip" id="alsoStrip"></div>
@@ -48,18 +47,18 @@
       </div>
       <div class="f orderPart">
         <span>Drink <small>optional</small></span>
-        <div class="itemLine drinkLine">
-          <span class="lineNo"></span>
-          <input id="pDrink" class="lineItem" placeholder="Coke, water, iced tea…"
-                 autocomplete="off" aria-label="Drink">
-          <label class="lineBackup">
-            <span>If they're out</span>
-            <input id="pDrinkAlt" class="lineAlt" placeholder="backup (optional)"
-                   autocomplete="off" aria-label="Backup drink">
-          </label>
+        <div class="itemLines">
+          <div class="itemLine drinkLine">
+            <input id="pDrink" class="lineItem" placeholder="Coke, water, iced tea…"
+                   autocomplete="off" aria-label="Drink">
+            <label class="lineBackup">
+              <span class="backupHead">If they're out, what would you like to get?</span>
+              <input id="pDrinkAlt" class="lineAlt" placeholder="optional" autocomplete="off"
+                     aria-label="Backup drink">
+            </label>
+          </div>
         </div>
-        <p class="hint lineNote">Its own backup, also optional.
-          If they're out of both, you get no drink.</p>
+        <p class="hint lineNote">If they're out of both, you get no drink.</p>
       </div>
       <div class="f">
         <span>Paying with</span>

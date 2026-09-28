@@ -1003,7 +1003,8 @@ $("fMethod").onclick = (event) => {
 };
 
 // The same lines as the ordering page: one thing per line, backups optional.
-const newLines = ItemLines.create($("fLines"), { list: "menuList",
+// Compact: one tight row per item, since the organiser is typing for others.
+const newLines = ItemLines.create($("fLines"), { list: "menuList", compact: true,
                                                  more: "another item (optional)" });
 
 $("orderForm").onsubmit = async (event) => {

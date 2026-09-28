@@ -24,8 +24,9 @@ const date = new Date().toLocaleDateString("en-CA");
    name, so it asks -- which is the right answer, not a regression. */
 const orderedHere = new Set();
 
-// One thing per line, each with its own optional backup -- see lines.js.
-const lines = ItemLines.create($("pLines"), { more: "something else? (optional)" });
+// One thing per line, each with its own optional backup, every box saying in
+// words what it is for -- see lines.js.
+const lines = ItemLines.create($("pLines"));
 
 /* Lines answered "No, mine is different" for the order being sent. Each
    answer covers only its own line; cleared once the order goes in. */

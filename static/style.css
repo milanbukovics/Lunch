@@ -566,25 +566,21 @@ body.noScroll { overflow: hidden; }
 .alsoChip i { font-style: normal; font-weight: 700; color: var(--muted); }
 .alsoChip:hover i { color: var(--accent); }
 
-/* One thing per line, each with its own optional backup (lines.js). The
-   backup hangs off its item behind a rule, so it reads as belonging to that
-   line -- and food and drink each visibly get their own. */
-.itemLines { display: flex; flex-direction: column; gap: 10px; }
-.itemLine {
-  display: grid; grid-template-columns: 18px minmax(0, 1fr);
-  gap: 6px 8px; align-items: center;
-}
-.lineNo { color: var(--muted); font-size: 12.5px; font-weight: 700; text-align: right;
-          font-variant-numeric: tabular-nums; }
+/* One thing per line, each with its own optional backup (lines.js). On the
+   ordering page every box says what it is for: a heading ("Item 1 -- what
+   you want to order"), the box, then the backup question on its own line
+   above its box, hanging off the item behind a rule so it reads as that
+   item's -- and the drink visibly gets its own. */
+.itemLines { display: flex; flex-direction: column; gap: 16px; }
+.itemLine { display: flex; flex-direction: column; gap: 6px; }
+.lineHead { font-size: 13.5px; color: var(--muted); }
+.lineHead b { color: var(--text); font-weight: 650; }
 .lineBackup {
-  grid-column: 2; display: flex; align-items: center; gap: 10px;
-  margin-left: 14px; padding-left: 12px; border-left: 2px solid var(--line);
+  display: flex; flex-direction: column; gap: 5px;
+  margin: 2px 0 0 10px; padding-left: 12px; border-left: 2px solid var(--line);
 }
-.lineBackup > span { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
-.f .lineBackup input {
-  flex: 1 1 0; min-width: 0; width: auto;
-  padding: 8px 11px; font-size: 14px; background: var(--surface);
-}
+.backupHead { font-size: 13px; color: var(--muted); }
+.f .lineBackup input { padding: 9px 12px; font-size: 14px; background: var(--surface); }
 /* The line a "same dish?" question is about. */
 .itemLine.lineAsk .lineItem {
   border-color: var(--amber);
@@ -593,12 +589,25 @@ body.noScroll { overflow: hidden; }
 .lineNote { margin: 2px 2px 0; }
 .f > span small { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 4px; }
 
-/* The organiser's form: lines take a row of their own, and on a wide screen
-   each backup sits beside its item rather than under it. */
+/* The organiser's form (compact): one tight row per item -- the number, the
+   box, and "If they're out" with its box beside it on a wide screen. */
 .orderEntry .f.full { flex: 1 1 100%; }
+.compactLines { gap: 10px; }
+.compactLines .itemLine {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px 8px; align-items: center;
+}
+.compactLines .lineHead { font-size: 12.5px; font-weight: 700; text-align: right;
+                          font-variant-numeric: tabular-nums; }
+.compactLines .lineBackup {
+  grid-column: 2; flex-direction: row; align-items: center; gap: 10px;
+  margin: 0 0 0 14px;
+}
+.compactLines .backupHead { font-size: 12.5px; white-space: nowrap; }
+.f .compactLines .lineBackup input { flex: 1 1 0; min-width: 0; width: auto; padding: 8px 11px; }
 @media (min-width: 720px) {
-  .wideLines .itemLine { grid-template-columns: 18px minmax(0, 3fr) minmax(0, 2fr); }
-  .wideLines .lineBackup { grid-column: auto; margin-left: 0; }
+  .compactLines.wideLines .itemLine { grid-template-columns: 18px minmax(0, 3fr) minmax(0, 2fr); }
+  .compactLines.wideLines .lineBackup { grid-column: auto; margin-left: 0; }
 }
 
 /* The backups under a drink line on the call sheet. */

@@ -47,18 +47,18 @@
       </label>
       <div class="f full">
         <span>Items <small>one per line · backups optional</small></span>
-        <div class="itemLines wideLines" id="fLines"></div>
+        <div class="itemLines compactLines wideLines" id="fLines"></div>
         <datalist id="menuList"></datalist>
       </div>
       <div class="f full">
         <span>Drink <small>optional</small></span>
-        <div class="itemLines wideLines">
+        <div class="itemLines compactLines wideLines">
           <div class="itemLine drinkLine">
-            <span class="lineNo"></span>
+            <span class="lineHead"></span>
             <input id="fDrink" class="lineItem" list="menuList" placeholder="Coke, water…"
                    autocomplete="off" aria-label="Drink">
             <label class="lineBackup">
-              <span>If they're out</span>
+              <span class="backupHead">If they're out</span>
               <input id="fDrinkAlt" class="lineAlt" list="menuList" placeholder="backup (optional)"
                      autocomplete="off" aria-label="Backup drink">
             </label>
